@@ -42,8 +42,8 @@ score_model.load_state_dict(torch.load("score_predictor.pth", map_location=torch
 score_model.eval()
 
 reddit = praw.Reddit(
-    client_id=st.secrets["REDDIT_CLIENT_ID"],
-    client_secret=st.secrets["REDDIT_CLIENT_SECRET"],
+    client_id = os.getenv("REDDIT_CLIENT_ID"),
+    client_secret=os.getenv["REDDIT_CLIENT_SECRET"],
     user_agent='MyAPI/0.0.1',
     check_for_async=False
 )
