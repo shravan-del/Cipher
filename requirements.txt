@@ -5,11 +5,13 @@ matplotlib
 scipy
 torch
 transformers
-scikit-learn
+scikit-learn==1.6.1
 praw
 joblib
 datetime
+gunicorn
 xgboost
+
 
 
 
