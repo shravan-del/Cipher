@@ -11,6 +11,8 @@ joblib
 datetime
 gunicorn
 xgboost
+uvicorn
+fastapi
 
 
 
