@@ -11,8 +11,28 @@ from torch import nn
 from fastapi import FastAPI
 from starlette.responses import Response
 import io
-from transformers import AutoTokenizer
+import requests
 
+# Google Drive Model URL
+MODEL_URL = "https://drive.google.com/uc?export=download&id=1mzeWB1SeTrYLchnUSMXO8pGM4lJGc0md"
+MODEL_PATH = "score_predictor.pth"
+
+def download_model():
+    """Download the model from Google Drive if it doesn't exist locally."""
+    if not os.path.exists(MODEL_PATH):
+        print("Downloading score_predictor.pth from Google Drive...")
+        response = requests.get(MODEL_URL, stream=True)
+        if response.status_code == 200:
+            with open(MODEL_PATH, "wb") as f:
+                for chunk in response.iter_content(chunk_size=1024):
+                    if chunk:
+                        f.write(chunk)
+            print("Download complete.")
+        else:
+            raise Exception(f"Failed to download model: HTTP {response.status_code}")
+
+# Ensure the model is downloaded before loading
+download_model()
 
 # Initialize FastAPI
 app = FastAPI()
@@ -23,7 +43,7 @@ autoclassifier = joblib.load('AutoClassifier.pkl')
 sentiment_model = joblib.load('sentiment_forecast_model.pkl')
 
 # Load PyTorch Model
-checkpoint = torch.load("score_predictor.pth", map_location=torch.device('cpu'))
+checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'))
 
 # Define ScorePredictor model
 class ScorePredictor(nn.Module):
