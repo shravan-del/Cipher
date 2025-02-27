@@ -18,8 +18,8 @@ MODEL_URL = "https://drive.google.com/uc?id=1mzeWB1SeTrYLchnUSMXO8pGM4lJGc0md"
 MODEL_PATH = "score_predictor.pth"
 
 def download_model():
-    """Download the model from Google Drive if it doesn't exist locally."""
-    if not os.path.exists(MODEL_PATH):
+    """Download the model from Google Drive if it doesn't exist or is corrupt."""
+    if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:  # Check if file is too small
         print("Downloading score_predictor.pth from Google Drive...")
         gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
         print("Download complete.")
@@ -35,12 +35,13 @@ autovectorizer = joblib.load('AutoVectorizer.pkl')
 autoclassifier = joblib.load('AutoClassifier.pkl')
 sentiment_model = joblib.load('sentiment_forecast_model.pkl')
 
-# ✅ Load PyTorch Model
+# ✅ Load PyTorch Model Safely
 try:
     checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False)
     print("Model loaded successfully!")
 except Exception as e:
-    print(f"Error loading model: {e}")
+    print(f"❌ Error loading model: {e}")
+    checkpoint = None  # Prevents crashes if the model fails to load
 
 # ✅ Define ScorePredictor Model
 class ScorePredictor(nn.Module):
@@ -56,10 +57,13 @@ class ScorePredictor(nn.Module):
         output = self.fc(final_hidden_state)
         return self.sigmoid(output)
 
-# ✅ Load the Model
-score_model = ScorePredictor(input_size=128, hidden_size=256, output_size=1)
-score_model.load_state_dict(checkpoint)
-score_model.eval()
+# ✅ Load the Model Only If It Downloaded Correctly
+if checkpoint:
+    score_model = ScorePredictor(input_size=128, hidden_size=256, output_size=1)
+    score_model.load_state_dict(checkpoint)
+    score_model.eval()
+else:
+    print("⚠️ Model failed to load. Check the download.")
 
 # ✅ Simulated Data for Sentiment Forecast (Replace with actual Reddit processing)
 np.random.seed(42)
