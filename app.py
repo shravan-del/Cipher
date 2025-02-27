@@ -11,43 +11,39 @@ from torch import nn
 from fastapi import FastAPI
 from starlette.responses import Response
 import io
-import gdown  # Replaces requests for downloading from Google Drive
+import gdown
 
-# Google Drive Model URL
-MODEL_URL = "https://drive.google.com/uc?export=download&id=1mzeWB1SeTrYLchnUSMXO8pGM4lJGc0md"
+# ✅ Correct Google Drive Direct Download Link
+MODEL_URL = "https://drive.google.com/uc?id=1mzeWB1SeTrYLchnUSMXO8pGM4lJGc0md"
 MODEL_PATH = "score_predictor.pth"
 
 def download_model():
-    """Download the model from Google Drive if it doesn't exist locally."""
-    if not os.path.exists(MODEL_PATH):
+    """Download the model from Google Drive if it doesn't exist or is corrupt."""
+    if not os.path.exists(MODEL_PATH) or os.path.getsize(MODEL_PATH) < 1000000:  # Check if file is too small
         print("Downloading score_predictor.pth from Google Drive...")
         gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
-        
-        # Verify file download
-        if os.path.exists(MODEL_PATH):
-            print(f"Model successfully downloaded! Size: {os.path.getsize(MODEL_PATH) / (1024 * 1024):.2f} MB")
-        else:
-            raise Exception("Failed to download model!")
+        print("Download complete.")
 
-# Ensure the model is downloaded before loading
+# ✅ Ensure the model is downloaded before loading
 download_model()
 
-# Initialize FastAPI
+# ✅ Initialize FastAPI
 app = FastAPI()
 
-# Load pre-trained vectorizer and classifier
+# ✅ Load pre-trained vectorizer and classifier
 autovectorizer = joblib.load('AutoVectorizer.pkl')
 autoclassifier = joblib.load('AutoClassifier.pkl')
 sentiment_model = joblib.load('sentiment_forecast_model.pkl')
 
-# Load PyTorch Model
+# ✅ Load PyTorch Model Safely
 try:
-    checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False, encoding="latin1")
+    checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False)
+    print("Model loaded successfully!")
 except Exception as e:
-    print(f"Error loading model: {e}")
-    exit(1)
+    print(f"❌ Error loading model: {e}")
+    checkpoint = None  # Prevents crashes if the model fails to load
 
-# Define ScorePredictor model
+# ✅ Define ScorePredictor Model
 class ScorePredictor(nn.Module):
     def __init__(self, input_size=128, hidden_size=256, output_size=1):
         super(ScorePredictor, self).__init__()
@@ -61,24 +57,25 @@ class ScorePredictor(nn.Module):
         output = self.fc(final_hidden_state)
         return self.sigmoid(output)
 
-# Load the model
-score_model = ScorePredictor(input_size=128, hidden_size=256, output_size=1)
-score_model.load_state_dict(checkpoint)
-score_model.eval()
+# ✅ Load the Model Only If It Downloaded Correctly
+if checkpoint:
+    score_model = ScorePredictor(input_size=128, hidden_size=256, output_size=1)
+    score_model.load_state_dict(checkpoint)
+    score_model.eval()
+else:
+    print("⚠️ Model failed to load. Check the download.")
 
-# Simulated Data for Sentiment Forecast (Replace this with actual Reddit processing)
+# ✅ Simulated Data for Sentiment Forecast (Replace with actual Reddit processing)
 np.random.seed(42)
 prediction = np.random.uniform(0.3, 0.7, 7)  # Simulated 7-day sentiment scores
 
 @app.get("/")
 def home():
-    return {"message": "✅ Sentiment Forecast API is running!"}
+    return {"message": "Sentiment Forecast API is running!"}
 
 @app.get("/graph.png")
 def generate_graph():
-    """Generates a sentiment forecast graph and returns it as an image."""
-    
-    # Generate X-axis labels
+    """Generate and return a sentiment forecast graph."""
     days = [datetime.date.today() + datetime.timedelta(days=i) for i in range(7)]
     days_str = [day.strftime('%a %m/%d') for day in days]
 
@@ -90,7 +87,7 @@ def generate_graph():
     # Create the plot
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.fill_between(xnew, pred_smooth, color='#244B48', alpha=0.4)
-    ax.plot(xnew, pred_smooth, color='#244B48', lw=3, label="Forecast")
+    ax.plot(xnew, pred_smooth, color='#244B48', lw=3, label='Forecast')
     ax.scatter(np.arange(7), prediction, color='#244B48', s=100, zorder=5)
     ax.set_title("7-Day Political Sentiment Forecast", fontsize=16, fontweight='bold')
     ax.set_xlabel("Day", fontsize=12)
