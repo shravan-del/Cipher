@@ -14,7 +14,7 @@ import io
 import gdown  # Replaces requests for downloading from Google Drive
 
 # Google Drive Model URL
-MODEL_URL = "https://drive.google.com/uc?export=download&id=1mzeWB1SeTrYLchnUSMXO8pGM4lJGc0md"
+MODEL_URL = "https://drive.google.com/file/d/1mzeWB1SeTrYLchnUSMXO8pGM4lJGc0md/view?usp=sharing"
 MODEL_PATH = "score_predictor.pth"
 
 def download_model():
