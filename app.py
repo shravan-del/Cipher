@@ -43,8 +43,7 @@ autoclassifier = joblib.load('AutoClassifier.pkl')
 sentiment_model = joblib.load('sentiment_forecast_model.pkl')
 
 # Load PyTorch Model
-checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'))
-
+checkpoint = torch.load("score_predictor.pth", map_location=torch.device('cpu'), weights_only=False)
 # Define ScorePredictor model
 class ScorePredictor(nn.Module):
     def __init__(self, input_size=128, hidden_size=256, output_size=1):
