@@ -13,8 +13,7 @@ from scipy.interpolate import make_interp_spline
 from transformers import AutoTokenizer
 from torch import nn
 
-
-
+# Load Vectorizers and Models
 autovectorizer = joblib.load('AutoVectorizer.pkl')
 autoclassifier = joblib.load('AutoClassifier.pkl')
 sentiment_model = joblib.load('sentiment_forecast_model.pkl')
@@ -22,6 +21,7 @@ sentiment_model = joblib.load('sentiment_forecast_model.pkl')
 MODEL = "cardiffnlp/xlm-twitter-politics-sentiment"
 tokenizer = AutoTokenizer.from_pretrained(MODEL)
 
+# Define Score Prediction Model
 class ScorePredictor(nn.Module):
     def __init__(self, vocab_size, embedding_dim=128, hidden_dim=256, output_dim=1):
         super(ScorePredictor, self).__init__()
@@ -37,24 +37,34 @@ class ScorePredictor(nn.Module):
         output = self.fc(final_hidden_state)
         return self.sigmoid(output)
 
+# Load Model State
 score_model = ScorePredictor(tokenizer.vocab_size)
-score_model.load_state_dict(torch.load("score_predictor.pth", map_location=torch.device('cpu')))
-score_model.eval()
+try:
+    score_model.load_state_dict(torch.load("score_predictor.pth", map_location=torch.device('cpu')))
+    score_model.eval()
+except FileNotFoundError:
+    st.error("Error: Model file 'score_predictor.pth' not found.")
 
+# Ensure Reddit API credentials are set
+reddit_client_id = os.getenv("REDDIT_CLIENT_ID")
+reddit_client_secret = os.getenv("REDDIT_CLIENT_SECRET")
+
+if not reddit_client_id or not reddit_client_secret:
+    st.error("Missing Reddit API credentials! Please set 'REDDIT_CLIENT_ID' and 'REDDIT_CLIENT_SECRET' in environment variables.")
+
+# Initialize Reddit API
 reddit = praw.Reddit(
-    client_id = os.getenv("REDDIT_CLIENT_ID"),
-    client_secret=os.getenv("REDDIT_CLIENT_SECRET"),
-    user_agent='MyAPI/0.0.1',
+    client_id=reddit_client_id,
+    client_secret=reddit_client_secret,
+    user_agent="MyAPI/0.0.1",
     check_for_async=False
 )
 
 subreddits = ['florida', 'kratom', 'ohio', 'libertarian', 'walkaway', 'truechristian', 'jordanpeterson']
-
-
-
 start_date = datetime.datetime.utcnow() - datetime.timedelta(days=14)
 
 def fetch_all_recent_posts(subreddit_name, start_time, limit=100):
+    """Fetches the latest posts from a subreddit."""
     subreddit = reddit.subreddit(subreddit_name)
     posts = []
     try:
@@ -72,6 +82,7 @@ def fetch_all_recent_posts(subreddit_name, start_time, limit=100):
     return posts
 
 def predict_score(text):
+    """Predicts sentiment score using the model."""
     if not text:
         return 0.0
     encoded_input = tokenizer(text.split(), return_tensors='pt', padding=True, truncation=True)
@@ -80,11 +91,13 @@ def predict_score(text):
         score = score_model(input_ids, attention_mask)[0].item()
     return score
 
+# Fetch and filter posts
 all_posts = []
 for sub in subreddits:
     all_posts.extend(fetch_all_recent_posts(sub, start_date, limit=100))
     time.sleep(1)
 
+# Filter posts based on classifier
 filtered_posts = [post for post in all_posts if autoclassifier.predict(autovectorizer.transform([post['post_text']]))[0] == 1]
 
 df = pd.DataFrame(filtered_posts)
@@ -96,36 +109,41 @@ else:
     df = df.sort_values(by=['date_only'])
     df['sentiment_score'] = df['post_text'].apply(predict_score)
     
+    # Compute daily sentiment averages
     last_14_dates = sorted(df['date_only'].unique(), reverse=True)[:14]
     daily_sentiment = df[df['date_only'].isin(last_14_dates)].groupby('date_only')['sentiment_score'].mean()
     
+    # Handle missing data
     if len(daily_sentiment) < 14:
         padding = [daily_sentiment.mean()] * (14 - len(daily_sentiment))
         daily_sentiment = np.concatenate([daily_sentiment.values, padding])
         daily_sentiment = pd.Series(daily_sentiment)
     
+    # Predict sentiment trend
     prediction = sentiment_model.predict(daily_sentiment.values.reshape(1, -1))[0]
     
-    # Plot
+    # Generate forecast graph
     days = [datetime.date.today() + datetime.timedelta(days=i) for i in range(7)]
     days_str = [day.strftime('%a %m/%d') for day in days]
+    
+    # Ensure smooth plotting
     xnew = np.linspace(0, 6, 300)
     spline = make_interp_spline(np.arange(7), prediction, k=3)
     pred_smooth = spline(xnew)
     
-    fig, ax = plt.subplots(figsize=(12, 7))
-    ax.fill_between(xnew, pred_smooth, color='#244B48', alpha=0.4)
-    ax.plot(xnew, pred_smooth, color='#244B48', lw=3, label='Forecast')
-    ax.scatter(np.arange(7), prediction, color='#244B48', s=100, zorder=5)
-    ax.set_title("7-Day Political Sentiment Forecast", fontsize=22, fontweight='bold')
-    ax.set_xlabel("Day", fontsize=16)
-    ax.set_ylabel("Negative Sentiment (0-1)", fontsize=16)
+    # Plot Graph
+    fig, ax = plt.subplots(figsize=(10, 6))
+    ax.fill_between(xnew, pred_smooth, color="gray", alpha=0.4)
+    ax.plot(xnew, pred_smooth, color="black", lw=2, label="Forecast")
+    ax.scatter(np.arange(7), prediction, color="black", s=80, zorder=5)
+
+    ax.set_title("7-Day Political Sentiment Forecast", fontsize=18, fontweight="bold")
+    ax.set_xlabel("Day", fontsize=14)
+    ax.set_ylabel("Negative Sentiment (0-1)", fontsize=14)
     ax.set_xticks(np.arange(7))
-    ax.set_xticklabels(days_str, fontsize=14)
-    ax.legend(fontsize=14, loc='upper right')
+    ax.set_xticklabels(days_str, fontsize=12)
+    ax.legend(fontsize=12, loc="upper right")
     plt.tight_layout()
     
+    # Display Graph in Streamlit
     st.pyplot(fig)
-
-
-
