@@ -11,7 +11,7 @@ from torch import nn
 from fastapi import FastAPI
 from starlette.responses import Response
 import io
-import requests
+import gdown  # Replaces requests for downloading from Google Drive
 
 # Google Drive Model URL
 MODEL_URL = "https://drive.google.com/uc?export=download&id=1mzeWB1SeTrYLchnUSMXO8pGM4lJGc0md"
@@ -21,15 +21,13 @@ def download_model():
     """Download the model from Google Drive if it doesn't exist locally."""
     if not os.path.exists(MODEL_PATH):
         print("Downloading score_predictor.pth from Google Drive...")
-        response = requests.get(MODEL_URL, stream=True)
-        if response.status_code == 200:
-            with open(MODEL_PATH, "wb") as f:
-                for chunk in response.iter_content(chunk_size=1024):
-                    if chunk:
-                        f.write(chunk)
-            print("Download complete.")
+        gdown.download(MODEL_URL, MODEL_PATH, quiet=False)
+        
+        # Verify file download
+        if os.path.exists(MODEL_PATH):
+            print(f"Model successfully downloaded! Size: {os.path.getsize(MODEL_PATH) / (1024 * 1024):.2f} MB")
         else:
-            raise Exception(f"Failed to download model: HTTP {response.status_code}")
+            raise Exception("Failed to download model!")
 
 # Ensure the model is downloaded before loading
 download_model()
@@ -43,7 +41,12 @@ autoclassifier = joblib.load('AutoClassifier.pkl')
 sentiment_model = joblib.load('sentiment_forecast_model.pkl')
 
 # Load PyTorch Model
-checkpoint = torch.load("score_predictor.pth", map_location=torch.device('cpu'), weights_only=False)
+try:
+    checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False, encoding="latin1")
+except Exception as e:
+    print(f"Error loading model: {e}")
+    exit(1)
+
 # Define ScorePredictor model
 class ScorePredictor(nn.Module):
     def __init__(self, input_size=128, hidden_size=256, output_size=1):
@@ -69,10 +72,12 @@ prediction = np.random.uniform(0.3, 0.7, 7)  # Simulated 7-day sentiment scores
 
 @app.get("/")
 def home():
-    return {"message": "Sentiment Forecast API is running!"}
+    return {"message": "✅ Sentiment Forecast API is running!"}
 
 @app.get("/graph.png")
 def generate_graph():
+    """Generates a sentiment forecast graph and returns it as an image."""
+    
     # Generate X-axis labels
     days = [datetime.date.today() + datetime.timedelta(days=i) for i in range(7)]
     days_str = [day.strftime('%a %m/%d') for day in days]
@@ -85,7 +90,7 @@ def generate_graph():
     # Create the plot
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.fill_between(xnew, pred_smooth, color='#244B48', alpha=0.4)
-    ax.plot(xnew, pred_smooth, color='#244B48', lw=3, label='Forecast')
+    ax.plot(xnew, pred_smooth, color='#244B48', lw=3, label="Forecast")
     ax.scatter(np.arange(7), prediction, color='#244B48', s=100, zorder=5)
     ax.set_title("7-Day Political Sentiment Forecast", fontsize=16, fontweight='bold')
     ax.set_xlabel("Day", fontsize=12)
