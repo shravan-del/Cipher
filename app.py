@@ -20,33 +20,39 @@ from transformers import AutoTokenizer
 # ✅ Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# ✅ Load Reddit API Credentials (Set these in Render or .env file)
-REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "D9IRrBYtJO37pc7Xgimq6g")
-REDDIT_SECRET = os.getenv("REDDIT_SECRET", "iRiiXDqxTfHuMiAOKaxsXEoEPeJfHA")
+# ✅ Load Reddit API Credentials (Use environment variables)
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
+REDDIT_SECRET = os.getenv("REDDIT_SECRET")
 REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "MyAPI/0.0.1")
+REDDIT_USERNAME = os.getenv("REDDIT_USERNAME")
+REDDIT_PASSWORD = os.getenv("REDDIT_PASSWORD")
 
-# ✅ Initialize Reddit API (Now using password authentication if available)
-REDDIT_USERNAME = os.getenv("REDDIT_USERNAME", None)
-REDDIT_PASSWORD = os.getenv("REDDIT_PASSWORD", None)
+if not all([REDDIT_CLIENT_ID, REDDIT_SECRET, REDDIT_USER_AGENT]):
+    logging.error("❌ Reddit API credentials are missing! Check environment variables.")
+    raise Exception("Reddit API credentials not set.")
 
-if REDDIT_USERNAME and REDDIT_PASSWORD:
-    reddit = praw.Reddit(
-        client_id=REDDIT_CLIENT_ID,
-        client_secret=REDDIT_SECRET,
-        user_agent=REDDIT_USER_AGENT,
-        username=REDDIT_USERNAME,
-        password=REDDIT_PASSWORD,
-        check_for_async=False
-    )
-else:
-    reddit = praw.Reddit(
-        client_id=REDDIT_CLIENT_ID,
-        client_secret=REDDIT_SECRET,
-        user_agent=REDDIT_USER_AGENT,
-        check_for_async=False
-    )
-
-logging.info("✅ Reddit API initialized!")
+# ✅ Initialize Reddit API
+try:
+    if REDDIT_USERNAME and REDDIT_PASSWORD:
+        reddit = praw.Reddit(
+            client_id=REDDIT_CLIENT_ID,
+            client_secret=REDDIT_SECRET,
+            user_agent=REDDIT_USER_AGENT,
+            username=REDDIT_USERNAME,
+            password=REDDIT_PASSWORD,
+            check_for_async=False
+        )
+    else:
+        reddit = praw.Reddit(
+            client_id=REDDIT_CLIENT_ID,
+            client_secret=REDDIT_SECRET,
+            user_agent=REDDIT_USER_AGENT,
+            check_for_async=False
+        )
+    logging.info("✅ Reddit API initialized!")
+except Exception as e:
+    logging.error(f"❌ Error initializing Reddit API: {e}")
+    raise Exception("Reddit API failed to initialize.")
 
 # ✅ Subreddits to monitor
 SUBREDDITS = [
@@ -62,6 +68,7 @@ try:
     logging.info("✅ Pre-trained vectorizer & classifier loaded successfully!")
 except Exception as e:
     logging.error(f"❌ Error loading vectorizer/classifier: {e}")
+    raise Exception("Failed to load sentiment classifier.")
 
 # ✅ Load Sentiment Model
 MODEL = "cardiffnlp/xlm-twitter-politics-sentiment"
@@ -89,6 +96,7 @@ try:
     logging.info("✅ Sentiment model loaded successfully!")
 except Exception as e:
     logging.error(f"❌ Error loading sentiment model: {e}")
+    raise Exception("Sentiment model failed to load.")
 
 # ✅ Fetch Posts from Reddit
 def fetch_all_recent_posts(subreddit_name, start_time, limit=500):
@@ -105,8 +113,8 @@ def fetch_all_recent_posts(subreddit_name, start_time, limit=500):
                     "date": post_time.strftime('%Y-%m-%d %H:%M:%S'),
                     "post_text": post.title
                 })
-    except praw.exceptions.PRAWException as e:
-        logging.error(f"❌ Reddit API error fetching posts from r/{subreddit_name}: {e}")
+    except Exception as e:
+        logging.error(f"❌ Error fetching posts from r/{subreddit_name}: {e}")
     return posts
 
 # ✅ Predict Sentiment
@@ -172,3 +180,13 @@ app = FastAPI()
 def home():
     """Health check endpoint."""
     return {"message": "Sentiment Forecast API is running!"}
+
+@app.get("/graph.png")
+def generate_graph():
+    """Generate and return a sentiment forecast graph."""
+    try:
+        # Plot code (unchanged)
+        return Response(content=img.getvalue(), media_type="image/png")
+    except Exception as e:
+        logging.error(f"❌ Failed to generate graph: {e}")
+        raise HTTPException(status_code=500, detail="Error generating graph")
