@@ -21,8 +21,8 @@ from transformers import AutoTokenizer
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ✅ Load Reddit API Credentials (Set these in Render or .env file)
-REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "PH99oWZjM43GimMtYigFvA")
-REDDIT_SECRET = os.getenv("REDDIT_SECRET", "3tJsXQKEtFFYInxzLEDqRZ0s_w5z0g")
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "D9IRrBYtJO37pc7Xgimq6g")
+REDDIT_SECRET = os.getenv("REDDIT_SECRET", "iRiiXDqxTfHuMiAOKaxsXEoEPeJfHA")
 REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "MyAPI/0.0.1")
 
 # ✅ Initialize Reddit API (Now using password authentication if available)
