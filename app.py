@@ -13,7 +13,12 @@ from fastapi import FastAPI, HTTPException
 from starlette.responses import Response
 import io
 import requests
+import logging
 from transformers import AutoTokenizer
+
+# ✅ Set Up Logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 # ✅ Google Drive Model URL & Path
 MODEL_URL = "https://drive.google.com/uc?id=1mzeWB1SeTrYLchnUSMXO8pGM4lJGc0md"
@@ -25,9 +30,9 @@ FONT_PATH = "AfacadFlux-VariableFont_slnt,wght[1].ttf"
 # ✅ Load Custom Font or Fallback
 if os.path.exists(FONT_PATH):
     custom_font = fm.FontProperties(fname=FONT_PATH)
-    print("✅ Custom font loaded successfully.")
+    logger.info("✅ Custom font loaded successfully.")
 else:
-    print(f"⚠️ Warning: Custom font not found at {FONT_PATH}. Using default font.")
+    logger.warning(f"⚠️ Custom font not found at {FONT_PATH}. Using default font.")
     custom_font = fm.FontProperties(family="sans-serif")
 
 # ✅ Function to Download Model from Google Drive
@@ -36,30 +41,31 @@ def download_model():
     if os.path.exists(MODEL_PATH):
         try:
             _ = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False)
-            print("✅ Model is already downloaded and valid.")
+            logger.info("✅ Model is already downloaded and valid.")
             return
-        except Exception:
-            print("⚠️ Model file is corrupt. Re-downloading...")
+        except Exception as e:
+            logger.error(f"⚠️ Model file is corrupt: {e}. Re-downloading...")
 
-    print("⬇️ Downloading model from Google Drive...")
+    logger.info("⬇️ Downloading model from Google Drive...")
     response = requests.get(MODEL_URL, stream=True)
 
     if "text/html" in response.headers.get("Content-Type", ""):
-        raise Exception("❌ Download failed: Received an invalid file. Check the Google Drive link.")
+        logger.error("❌ Download failed: Received an invalid file. Check the Google Drive link.")
+        return
 
     with open(MODEL_PATH, "wb") as f:
         for chunk in response.iter_content(chunk_size=1024):
             if chunk:
                 f.write(chunk)
 
-    print("✅ Download complete. Validating model...")
+    logger.info("✅ Download complete. Validating model...")
 
     try:
         _ = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False)
-        print("✅ Model validated successfully!")
+        logger.info("✅ Model validated successfully!")
     except Exception as e:
         os.remove(MODEL_PATH)  # Delete invalid file
-        raise Exception(f"❌ Downloaded file is not a valid PyTorch model: {e}")
+        logger.error(f"❌ Downloaded file is not a valid PyTorch model: {e}")
 
 # ✅ Ensure model is downloaded before loading
 download_model()
@@ -72,9 +78,9 @@ try:
     autovectorizer = joblib.load('AutoVectorizer.pkl')
     autoclassifier = joblib.load('AutoClassifier.pkl')
     sentiment_model = joblib.load('sentiment_forecast_model.pkl')
-    print("✅ Pre-trained vectorizer & classifier loaded successfully!")
+    logger.info("✅ Pre-trained vectorizer & classifier loaded successfully!")
 except Exception as e:
-    print(f"❌ Error loading vectorizer/classifier: {e}")
+    logger.error(f"❌ Error loading vectorizer/classifier: {e}")
 
 # ✅ Define PyTorch Model Architecture
 class ScorePredictor(nn.Module):
@@ -95,19 +101,35 @@ class ScorePredictor(nn.Module):
 # ✅ Load PyTorch Model
 try:
     checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False)
-    print(f"✅ Model checkpoint keys: {checkpoint.keys()}")
+    logger.info(f"✅ Model checkpoint keys: {checkpoint.keys()}")
 
     score_model = ScorePredictor()
     score_model.load_state_dict(checkpoint)
     score_model.eval()
-    print("✅ Model loaded successfully!")
+    logger.info("✅ Model loaded successfully!")
 
 except Exception as e:
-    print(f"❌ Error loading model: {e}")
+    logger.error(f"❌ Error loading model: {e}")
 
 # ✅ Simulated Sentiment Forecast Data
 np.random.seed(42)
 prediction = np.random.uniform(0.3, 0.7, 7)  # Simulated 7-day sentiment scores
+
+# ✅ Fix 0 values in prediction
+def clean_prediction_data(pred):
+    """Replace 0 values with interpolated or last known values."""
+    pred = np.array(pred)
+    if np.all(pred == 0):  # If all values are zero, log error
+        logger.error("❌ All sentiment scores are zero. Something went wrong with data collection.")
+        return np.ones(len(pred)) * 0.5  # Replace with 0.5 default
+
+    mask = pred == 0  # Find zero values
+    pred[mask] = np.nan  # Convert zeros to NaN for interpolation
+    pred = pd.Series(pred).interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
+    return pred.to_numpy()
+
+# ✅ Apply Fix
+prediction = clean_prediction_data(prediction)
 
 @app.get("/")
 def home():
@@ -160,4 +182,5 @@ def generate_graph():
         return Response(content=img.getvalue(), media_type="image/png")
 
     except Exception as e:
+        logger.error(f"❌ Failed to generate graph: {e}")
         raise HTTPException(status_code=500, detail=f"❌ Failed to generate graph: {e}")
