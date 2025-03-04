@@ -2,11 +2,11 @@ import os
 import datetime
 import joblib
 import numpy as np
+import pandas as pd
 import torch
 import matplotlib
 matplotlib.use("Agg")  # Use a non-GUI backend
 import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
 from scipy.interpolate import make_interp_spline
 from torch import nn
 from fastapi import FastAPI, HTTPException
@@ -14,58 +14,43 @@ from starlette.responses import Response
 import io
 import requests
 import logging
-from transformers import AutoTokenizer
 
-# ✅ Set Up Logging
+# ✅ Configure Logging for Debugging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
-logger = logging.getLogger(__name__)
 
 # ✅ Google Drive Model URL & Path
 MODEL_URL = "https://drive.google.com/uc?id=1mzeWB1SeTrYLchnUSMXO8pGM4lJGc0md"
 MODEL_PATH = "score_predictor.pth"
 
-# ✅ Font File Path
-FONT_PATH = "AfacadFlux-VariableFont_slnt,wght[1].ttf"
-
-# ✅ Load Custom Font or Fallback
-if os.path.exists(FONT_PATH):
-    custom_font = fm.FontProperties(fname=FONT_PATH)
-    logger.info("✅ Custom font loaded successfully.")
-else:
-    logger.warning(f"⚠️ Custom font not found at {FONT_PATH}. Using default font.")
-    custom_font = fm.FontProperties(family="sans-serif")
-
-# ✅ Function to Download Model from Google Drive
+# ✅ Download and validate the model
 def download_model():
-    """Download and validate the model from Google Drive if needed."""
     if os.path.exists(MODEL_PATH):
         try:
-            _ = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False)
-            logger.info("✅ Model is already downloaded and valid.")
+            _ = torch.load(MODEL_PATH, map_location=torch.device('cpu'))
+            logging.info("✅ Model is already downloaded and valid.")
             return
-        except Exception as e:
-            logger.error(f"⚠️ Model file is corrupt: {e}. Re-downloading...")
+        except Exception:
+            logging.warning("⚠️ Model file is corrupt. Re-downloading...")
 
-    logger.info("⬇️ Downloading model from Google Drive...")
+    logging.info("⬇️ Downloading model from Google Drive...")
     response = requests.get(MODEL_URL, stream=True)
 
     if "text/html" in response.headers.get("Content-Type", ""):
-        logger.error("❌ Download failed: Received an invalid file. Check the Google Drive link.")
-        return
+        raise Exception("❌ Download failed: Received an invalid file. Check the Google Drive link.")
 
     with open(MODEL_PATH, "wb") as f:
         for chunk in response.iter_content(chunk_size=1024):
             if chunk:
                 f.write(chunk)
 
-    logger.info("✅ Download complete. Validating model...")
+    logging.info("✅ Download complete. Validating model...")
 
     try:
-        _ = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False)
-        logger.info("✅ Model validated successfully!")
+        _ = torch.load(MODEL_PATH, map_location=torch.device('cpu'))
+        logging.info("✅ Model validated successfully!")
     except Exception as e:
-        os.remove(MODEL_PATH)  # Delete invalid file
-        logger.error(f"❌ Downloaded file is not a valid PyTorch model: {e}")
+        os.remove(MODEL_PATH)
+        raise Exception(f"❌ Downloaded file is not a valid PyTorch model: {e}")
 
 # ✅ Ensure model is downloaded before loading
 download_model()
@@ -78,11 +63,11 @@ try:
     autovectorizer = joblib.load('AutoVectorizer.pkl')
     autoclassifier = joblib.load('AutoClassifier.pkl')
     sentiment_model = joblib.load('sentiment_forecast_model.pkl')
-    logger.info("✅ Pre-trained vectorizer & classifier loaded successfully!")
+    logging.info("✅ Pre-trained vectorizer & classifier loaded successfully!")
 except Exception as e:
-    logger.error(f"❌ Error loading vectorizer/classifier: {e}")
+    logging.error(f"❌ Error loading vectorizer/classifier: {e}")
 
-# ✅ Define PyTorch Model Architecture
+# ✅ Define Model Architecture
 class ScorePredictor(nn.Module):
     def __init__(self, vocab_size=250002, embedding_dim=128, hidden_dim=256, output_dim=1):
         super(ScorePredictor, self).__init__()
@@ -100,35 +85,34 @@ class ScorePredictor(nn.Module):
 
 # ✅ Load PyTorch Model
 try:
-    checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False)
-    logger.info(f"✅ Model checkpoint keys: {checkpoint.keys()}")
+    checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'))
+    logging.info(f"✅ Model checkpoint keys: {checkpoint.keys()}")
 
     score_model = ScorePredictor()
     score_model.load_state_dict(checkpoint)
     score_model.eval()
-    logger.info("✅ Model loaded successfully!")
+    logging.info("✅ Model loaded successfully!")
 
 except Exception as e:
-    logger.error(f"❌ Error loading model: {e}")
+    logging.error(f"❌ Error loading model: {e}")
 
-# ✅ Simulated Sentiment Forecast Data
+# ✅ Function to clean prediction data
+def clean_prediction_data(pred):
+    """Ensure prediction data has no NaN values by interpolation & filling."""
+    try:
+        pred_series = pd.Series(pred)
+        cleaned_pred = pred_series.interpolate(method='linear')  # Interpolate missing values
+        cleaned_pred = cleaned_pred.fillna(method='bfill').fillna(method='ffill')  # Fill NaNs
+        return cleaned_pred.tolist()
+    except Exception as e:
+        logging.error(f"❌ Error cleaning prediction data: {e}")
+        return pred  # Return raw prediction if error occurs
+
+# ✅ Simulated Data for Sentiment Forecast
 np.random.seed(42)
 prediction = np.random.uniform(0.3, 0.7, 7)  # Simulated 7-day sentiment scores
 
-# ✅ Fix 0 values in prediction
-def clean_prediction_data(pred):
-    """Replace 0 values with interpolated or last known values."""
-    pred = np.array(pred)
-    if np.all(pred == 0):  # If all values are zero, log error
-        logger.error("❌ All sentiment scores are zero. Something went wrong with data collection.")
-        return np.ones(len(pred)) * 0.5  # Replace with 0.5 default
-
-    mask = pred == 0  # Find zero values
-    pred[mask] = np.nan  # Convert zeros to NaN for interpolation
-    pred = pd.Series(pred).interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
-    return pred.to_numpy()
-
-# ✅ Apply Fix
+# ✅ Apply data cleaning function
 prediction = clean_prediction_data(prediction)
 
 @app.get("/")
@@ -141,8 +125,7 @@ def generate_graph():
     """Generate and return a sentiment forecast graph."""
     try:
         # ✅ Generate X-axis labels
-        today = datetime.date.today()
-        days = [today + datetime.timedelta(days=i) for i in range(7)]
+        days = [datetime.date.today() + datetime.timedelta(days=i) for i in range(7)]
         days_str = [day.strftime('%a %m/%d') for day in days]
 
         # ✅ Smooth the curve
@@ -151,27 +134,16 @@ def generate_graph():
         pred_smooth = spline(xnew)
 
         # ✅ Create the plot
-        fig, ax = plt.subplots(figsize=(12, 7))
+        fig, ax = plt.subplots(figsize=(10, 5))
         ax.fill_between(xnew, pred_smooth, color='#244B48', alpha=0.4)
         ax.plot(xnew, pred_smooth, color='#244B48', lw=3, label='Forecast')
         ax.scatter(np.arange(7), prediction, color='#244B48', s=100, zorder=5)
-
-        # ✅ Apply Custom Font
-        ax.set_title("7-Day Political Sentiment Forecast", fontsize=22, fontweight='bold', pad=20, fontproperties=custom_font)
-        ax.set_xlabel("Day", fontsize=16, fontproperties=custom_font)
-        ax.set_ylabel("Negative Sentiment (0-1)", fontsize=16, fontproperties=custom_font)
+        ax.set_title("7-Day Political Sentiment Forecast", fontsize=16, fontweight='bold')
+        ax.set_xlabel("Day", fontsize=12)
+        ax.set_ylabel("Negative Sentiment (0-1)", fontsize=12)
         ax.set_xticks(np.arange(7))
-        ax.set_xticklabels(days_str, fontsize=14, fontproperties=custom_font)
-        ax.set_yticklabels([f"{tick:.2f}" for tick in ax.get_yticks()], fontsize=14, fontproperties=custom_font)
-
-        # ✅ Remove Grid & Spines
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-        ax.spines['left'].set_visible(False)
-        ax.spines['bottom'].set_visible(False)
-
-        # ✅ Apply font to legend
-        ax.legend(fontsize=14, loc='upper right', prop=custom_font)
+        ax.set_xticklabels(days_str, fontsize=10)
+        ax.legend(fontsize=10, loc='upper right')
         plt.tight_layout()
 
         # ✅ Save to in-memory image file
@@ -182,5 +154,5 @@ def generate_graph():
         return Response(content=img.getvalue(), media_type="image/png")
 
     except Exception as e:
-        logger.error(f"❌ Failed to generate graph: {e}")
-        raise HTTPException(status_code=500, detail=f"❌ Failed to generate graph: {e}")
+        logging.error(f"❌ Failed to generate graph: {e}")
+        raise HTTPException(status_code=500, detail="Error generating graph")
