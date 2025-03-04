@@ -17,31 +17,41 @@ import requests
 import logging
 from transformers import AutoTokenizer
 
-# ✅ Configure Logging for Debugging
+# ✅ Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# ✅ Load Environment Variables
+# ✅ Load Reddit API Credentials (Set these in Render or .env file)
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "PH99oWZjM43GimMtYigFvA")
 REDDIT_SECRET = os.getenv("REDDIT_SECRET", "3tJsXQKEtFFYInxzLEDqRZ0s_w5z0g")
 REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "MyAPI/0.0.1")
 
-# ✅ Initialize Reddit API
-reddit = praw.Reddit(
-    client_id=REDDIT_CLIENT_ID,
-    client_secret=REDDIT_SECRET,
-    user_agent=REDDIT_USER_AGENT,
-    check_for_async=False
-)
+# ✅ Initialize Reddit API (Now using password authentication if available)
+REDDIT_USERNAME = os.getenv("REDDIT_USERNAME", None)
+REDDIT_PASSWORD = os.getenv("REDDIT_PASSWORD", None)
+
+if REDDIT_USERNAME and REDDIT_PASSWORD:
+    reddit = praw.Reddit(
+        client_id=REDDIT_CLIENT_ID,
+        client_secret=REDDIT_SECRET,
+        user_agent=REDDIT_USER_AGENT,
+        username=REDDIT_USERNAME,
+        password=REDDIT_PASSWORD,
+        check_for_async=False
+    )
+else:
+    reddit = praw.Reddit(
+        client_id=REDDIT_CLIENT_ID,
+        client_secret=REDDIT_SECRET,
+        user_agent=REDDIT_USER_AGENT,
+        check_for_async=False
+    )
+
+logging.info("✅ Reddit API initialized!")
 
 # ✅ Subreddits to monitor
 SUBREDDITS = [
-    "florida",
-    "ohio",
-    "libertarian",
-    "southpark",
-    "walkaway",
-    "truechristian",
-    "conservatives"
+    "florida", "ohio", "libertarian", "southpark",
+    "walkaway", "truechristian", "conservatives"
 ]
 
 # ✅ Load Pre-trained Models
@@ -80,7 +90,7 @@ try:
 except Exception as e:
     logging.error(f"❌ Error loading sentiment model: {e}")
 
-# ✅ Function to Fetch Posts
+# ✅ Fetch Posts from Reddit
 def fetch_all_recent_posts(subreddit_name, start_time, limit=500):
     """Fetches posts from Reddit and filters them by time."""
     subreddit = reddit.subreddit(subreddit_name)
@@ -95,11 +105,11 @@ def fetch_all_recent_posts(subreddit_name, start_time, limit=500):
                     "date": post_time.strftime('%Y-%m-%d %H:%M:%S'),
                     "post_text": post.title
                 })
-    except Exception as e:
-        logging.error(f"Error fetching posts from r/{subreddit_name}: {e}")
+    except praw.exceptions.PRAWException as e:
+        logging.error(f"❌ Reddit API error fetching posts from r/{subreddit_name}: {e}")
     return posts
 
-# ✅ Function to Predict Sentiment
+# ✅ Predict Sentiment
 def predict_score(text):
     """Predicts sentiment score using the PyTorch model."""
     if not text:
@@ -126,21 +136,22 @@ for sub in SUBREDDITS:
     logging.info(f"✅ Fetched {len(posts)} posts from r/{sub}")
 
 if not all_posts:
-    logging.warning("⚠️ No posts fetched! Possible API issue.")
+    logging.warning("⚠️ No posts fetched! Check Reddit API credentials.")
 
-# ✅ Preprocess Posts & Predict Sentiment
-df = pd.DataFrame(all_posts)
-df['date'] = pd.to_datetime(df['date'])
-df['date_only'] = df['date'].dt.date
-df = df.sort_values(by=['date_only'])
-
-df['sentiment_score'] = df['post_text'].apply(predict_score)
-df = df.dropna()  # Remove rows where prediction failed
-
-if df.empty:
-    logging.error("❌ All sentiment scores failed! Defaulting to random values.")
-    df = pd.DataFrame({"date_only": [start_time.date() + datetime.timedelta(days=i) for i in range(14)],
-                       "sentiment_score": np.random.uniform(0.3, 0.7, 14)})
+# ✅ Handle Empty DataFrame
+if not all_posts:
+    logging.error("❌ No data fetched. Using random fallback values.")
+    df = pd.DataFrame({
+        "date_only": [start_time.date() + datetime.timedelta(days=i) for i in range(14)],
+        "sentiment_score": np.random.uniform(0.3, 0.7, 14)
+    })
+else:
+    df = pd.DataFrame(all_posts)
+    df['date'] = pd.to_datetime(df['date'])
+    df['date_only'] = df['date'].dt.date
+    df = df.sort_values(by=['date_only'])
+    df['sentiment_score'] = df['post_text'].apply(predict_score)
+    df = df.dropna()
 
 # ✅ Aggregate Sentiment by Day
 daily_sentiment = df.groupby('date_only')['sentiment_score'].median()
@@ -161,40 +172,3 @@ app = FastAPI()
 def home():
     """Health check endpoint."""
     return {"message": "Sentiment Forecast API is running!"}
-
-@app.get("/graph.png")
-def generate_graph():
-    """Generate and return a sentiment forecast graph."""
-    try:
-        # ✅ Generate X-axis labels
-        days = [datetime.date.today() + datetime.timedelta(days=i) for i in range(7)]
-        days_str = [day.strftime('%a %m/%d') for day in days]
-
-        # ✅ Smooth the curve
-        xnew = np.linspace(0, 6, 300)
-        spline = make_interp_spline(np.arange(7), pred, k=3)
-        pred_smooth = spline(xnew)
-
-        # ✅ Create the plot
-        fig, ax = plt.subplots(figsize=(12, 7))
-        ax.fill_between(xnew, pred_smooth, color='#244B48', alpha=0.4)
-        ax.plot(xnew, pred_smooth, color='#244B48', lw=3, label='Forecast')
-        ax.scatter(np.arange(7), pred, color='#244B48', s=100, zorder=5)
-        ax.set_title("7-Day Political Sentiment Forecast", fontsize=16, fontweight='bold')
-        ax.set_xlabel("Day", fontsize=12)
-        ax.set_ylabel("Negative Sentiment (0-1)", fontsize=12)
-        ax.set_xticks(np.arange(7))
-        ax.set_xticklabels(days_str, fontsize=10)
-        ax.legend(fontsize=10, loc='upper right')
-        plt.tight_layout()
-
-        # ✅ Save to in-memory image file
-        img = io.BytesIO()
-        plt.savefig(img, format='png')
-        img.seek(0)
-
-        return Response(content=img.getvalue(), media_type="image/png")
-
-    except Exception as e:
-        logging.error(f"❌ Failed to generate graph: {e}")
-        raise HTTPException(status_code=500, detail="Error generating graph")
