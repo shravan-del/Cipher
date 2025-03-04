@@ -4,6 +4,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import torch
+import praw
 import matplotlib
 matplotlib.use("Agg")  # Use a non-GUI backend
 import matplotlib.pyplot as plt
@@ -14,51 +15,36 @@ from starlette.responses import Response
 import io
 import requests
 import logging
+from transformers import AutoTokenizer
 
 # ✅ Configure Logging for Debugging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# ✅ Google Drive Model URL & Path
-MODEL_URL = "https://drive.google.com/uc?id=1mzeWB1SeTrYLchnUSMXO8pGM4lJGc0md"
-MODEL_PATH = "score_predictor.pth"
+# ✅ Load Environment Variables
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "PH99oWZjM43GimMtYigFvA")
+REDDIT_SECRET = os.getenv("REDDIT_SECRET", "3tJsXQKEtFFYInxzLEDqRZ0s_w5z0g")
+REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "MyAPI/0.0.1")
 
-# ✅ Download and validate the model
-def download_model():
-    if os.path.exists(MODEL_PATH):
-        try:
-            _ = torch.load(MODEL_PATH, map_location=torch.device('cpu'))
-            logging.info("✅ Model is already downloaded and valid.")
-            return
-        except Exception:
-            logging.warning("⚠️ Model file is corrupt. Re-downloading...")
+# ✅ Initialize Reddit API
+reddit = praw.Reddit(
+    client_id=REDDIT_CLIENT_ID,
+    client_secret=REDDIT_SECRET,
+    user_agent=REDDIT_USER_AGENT,
+    check_for_async=False
+)
 
-    logging.info("⬇️ Downloading model from Google Drive...")
-    response = requests.get(MODEL_URL, stream=True)
+# ✅ Subreddits to monitor
+SUBREDDITS = [
+    "florida",
+    "ohio",
+    "libertarian",
+    "southpark",
+    "walkaway",
+    "truechristian",
+    "conservatives"
+]
 
-    if "text/html" in response.headers.get("Content-Type", ""):
-        raise Exception("❌ Download failed: Received an invalid file. Check the Google Drive link.")
-
-    with open(MODEL_PATH, "wb") as f:
-        for chunk in response.iter_content(chunk_size=1024):
-            if chunk:
-                f.write(chunk)
-
-    logging.info("✅ Download complete. Validating model...")
-
-    try:
-        _ = torch.load(MODEL_PATH, map_location=torch.device('cpu'))
-        logging.info("✅ Model validated successfully!")
-    except Exception as e:
-        os.remove(MODEL_PATH)
-        raise Exception(f"❌ Downloaded file is not a valid PyTorch model: {e}")
-
-# ✅ Ensure model is downloaded before loading
-download_model()
-
-# ✅ Initialize FastAPI
-app = FastAPI()
-
-# ✅ Load pre-trained vectorizer and classifier
+# ✅ Load Pre-trained Models
 try:
     autovectorizer = joblib.load('AutoVectorizer.pkl')
     autoclassifier = joblib.load('AutoClassifier.pkl')
@@ -67,53 +53,109 @@ try:
 except Exception as e:
     logging.error(f"❌ Error loading vectorizer/classifier: {e}")
 
-# ✅ Define Model Architecture
+# ✅ Load Sentiment Model
+MODEL = "cardiffnlp/xlm-twitter-politics-sentiment"
+tokenizer = AutoTokenizer.from_pretrained(MODEL)
+
 class ScorePredictor(nn.Module):
-    def __init__(self, vocab_size=250002, embedding_dim=128, hidden_dim=256, output_dim=1):
+    def __init__(self, vocab_size, embedding_dim=128, hidden_dim=256, output_dim=1):
         super(ScorePredictor, self).__init__()
         self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
         self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
         self.fc = nn.Linear(hidden_dim, output_dim)
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, input_ids):
+    def forward(self, input_ids, attention_mask):
         embedded = self.embedding(input_ids)
         lstm_out, _ = self.lstm(embedded)
         final_hidden_state = lstm_out[:, -1, :]
         output = self.fc(final_hidden_state)
         return self.sigmoid(output)
 
-# ✅ Load PyTorch Model
+score_model = ScorePredictor(tokenizer.vocab_size)
 try:
-    checkpoint = torch.load(MODEL_PATH, map_location=torch.device('cpu'))
-    logging.info(f"✅ Model checkpoint keys: {checkpoint.keys()}")
-
-    score_model = ScorePredictor()
-    score_model.load_state_dict(checkpoint)
+    score_model.load_state_dict(torch.load("score_predictor.pth", map_location=torch.device('cpu')))
     score_model.eval()
-    logging.info("✅ Model loaded successfully!")
-
+    logging.info("✅ Sentiment model loaded successfully!")
 except Exception as e:
-    logging.error(f"❌ Error loading model: {e}")
+    logging.error(f"❌ Error loading sentiment model: {e}")
 
-# ✅ Function to clean prediction data
-def clean_prediction_data(pred):
-    """Ensure prediction data has no NaN values by interpolation & filling."""
+# ✅ Function to Fetch Posts
+def fetch_all_recent_posts(subreddit_name, start_time, limit=500):
+    """Fetches posts from Reddit and filters them by time."""
+    subreddit = reddit.subreddit(subreddit_name)
+    posts = []
     try:
-        pred_series = pd.Series(pred)
-        cleaned_pred = pred_series.interpolate(method='linear')  # Interpolate missing values
-        cleaned_pred = cleaned_pred.fillna(method='bfill').fillna(method='ffill')  # Fill NaNs
-        return cleaned_pred.tolist()
+        for post in subreddit.new(limit=limit):
+            post_time = datetime.datetime.utcfromtimestamp(post.created_utc)
+            if post_time >= start_time:
+                posts.append({
+                    "subreddit": subreddit_name,
+                    "timestamp": post.created_utc,
+                    "date": post_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    "post_text": post.title
+                })
     except Exception as e:
-        logging.error(f"❌ Error cleaning prediction data: {e}")
-        return pred  # Return raw prediction if error occurs
+        logging.error(f"Error fetching posts from r/{subreddit_name}: {e}")
+    return posts
 
-# ✅ Simulated Data for Sentiment Forecast
-np.random.seed(42)
-prediction = np.random.uniform(0.3, 0.7, 7)  # Simulated 7-day sentiment scores
+# ✅ Function to Predict Sentiment
+def predict_score(text):
+    """Predicts sentiment score using the PyTorch model."""
+    if not text:
+        return None
+    encoded_input = tokenizer(
+        text.split(),
+        return_tensors='pt',
+        padding=True,
+        truncation=True,
+        max_length=512
+    )
+    input_ids, attention_mask = encoded_input["input_ids"], encoded_input["attention_mask"]
+    with torch.no_grad():
+        score = score_model(input_ids, attention_mask)[0].item()
+    return score
 
-# ✅ Apply data cleaning function
-prediction = clean_prediction_data(prediction)
+# ✅ Start Data Collection
+start_time = datetime.datetime.utcnow() - datetime.timedelta(days=14)
+all_posts = []
+for sub in SUBREDDITS:
+    logging.info(f"Fetching posts from r/{sub}...")
+    posts = fetch_all_recent_posts(sub, start_time)
+    all_posts.extend(posts)
+    logging.info(f"✅ Fetched {len(posts)} posts from r/{sub}")
+
+if not all_posts:
+    logging.warning("⚠️ No posts fetched! Possible API issue.")
+
+# ✅ Preprocess Posts & Predict Sentiment
+df = pd.DataFrame(all_posts)
+df['date'] = pd.to_datetime(df['date'])
+df['date_only'] = df['date'].dt.date
+df = df.sort_values(by=['date_only'])
+
+df['sentiment_score'] = df['post_text'].apply(predict_score)
+df = df.dropna()  # Remove rows where prediction failed
+
+if df.empty:
+    logging.error("❌ All sentiment scores failed! Defaulting to random values.")
+    df = pd.DataFrame({"date_only": [start_time.date() + datetime.timedelta(days=i) for i in range(14)],
+                       "sentiment_score": np.random.uniform(0.3, 0.7, 14)})
+
+# ✅ Aggregate Sentiment by Day
+daily_sentiment = df.groupby('date_only')['sentiment_score'].median()
+
+# ✅ Fill Missing Dates
+expected_dates = pd.date_range(start=start_time.date(), periods=14)
+daily_sentiment = daily_sentiment.reindex(expected_dates, fill_value=np.nan)
+daily_sentiment = daily_sentiment.interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
+
+# ✅ Forecast Future Sentiment
+sentiment_scores_np = daily_sentiment.values.reshape(1, -1)
+pred = sentiment_model.predict(sentiment_scores_np)[0]
+
+# ✅ Initialize FastAPI
+app = FastAPI()
 
 @app.get("/")
 def home():
@@ -130,14 +172,14 @@ def generate_graph():
 
         # ✅ Smooth the curve
         xnew = np.linspace(0, 6, 300)
-        spline = make_interp_spline(np.arange(7), prediction, k=3)
+        spline = make_interp_spline(np.arange(7), pred, k=3)
         pred_smooth = spline(xnew)
 
         # ✅ Create the plot
-        fig, ax = plt.subplots(figsize=(10, 5))
+        fig, ax = plt.subplots(figsize=(12, 7))
         ax.fill_between(xnew, pred_smooth, color='#244B48', alpha=0.4)
         ax.plot(xnew, pred_smooth, color='#244B48', lw=3, label='Forecast')
-        ax.scatter(np.arange(7), prediction, color='#244B48', s=100, zorder=5)
+        ax.scatter(np.arange(7), pred, color='#244B48', s=100, zorder=5)
         ax.set_title("7-Day Political Sentiment Forecast", fontsize=16, fontweight='bold')
         ax.set_xlabel("Day", fontsize=12)
         ax.set_ylabel("Negative Sentiment (0-1)", fontsize=12)
