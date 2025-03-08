@@ -21,8 +21,8 @@ from transformers import AutoTokenizer
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ✅ Load Reddit API Credentials (Use environment variables)
-REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "D9IRrBYtJO37pc7Xgimq6g")
-REDDIT_SECRET = os.getenv("REDDIT_SECRET", "iRiiXDqxTfHuMiAOKaxsXEoEPeJfHA")
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
+REDDIT_SECRET = os.getenv("REDDIT_SECRET")
 REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "MyAPI/0.0.1")
 REDDIT_USERNAME = os.getenv("REDDIT_USERNAME")
 REDDIT_PASSWORD = os.getenv("REDDIT_PASSWORD")
@@ -185,7 +185,13 @@ def home():
 def generate_graph():
     """Generate and return a sentiment forecast graph."""
     try:
-        # Plot code (unchanged)
+        img = io.BytesIO()  # ✅ FIXED: Ensure img is initialized
+        fig, ax = plt.subplots(figsize=(10, 5))
+        ax.fill_between(range(7), pred, color='#244B48', alpha=0.4)
+        ax.plot(range(7), pred, color='#244B48', lw=3, label='Forecast')
+        ax.scatter(range(7), pred, color='#244B48', s=100, zorder=5)
+        plt.savefig(img, format='png')
+        img.seek(0)
         return Response(content=img.getvalue(), media_type="image/png")
     except Exception as e:
         logging.error(f"❌ Failed to generate graph: {e}")
