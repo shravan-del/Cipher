@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import joblib
 import matplotlib
-matplotlib.use("Agg")  # Non-GUI backend for Render
+matplotlib.use("Agg")  # Use non-GUI backend for Render
 import matplotlib.pyplot as plt
 from scipy.interpolate import make_interp_spline
 import torch
@@ -85,22 +85,22 @@ except Exception as e:
     logging.error(f"❌ Error loading sentiment model: {e}")
     raise Exception("Sentiment model failed to load.")
 
-# ✅ Fetch Posts from Reddit
-async def fetch_all_recent_posts(subreddit_name, time_filter='month'):
-    """Fetches posts from Reddit asynchronously."""
-    subreddit = await async_reddit.subreddit(subreddit_name)
-    posts = []
-
-    try:
-        async for post in subreddit.top(time_filter=time_filter, limit=25):
-            posts.append({
-                "date": datetime.datetime.utcfromtimestamp(post.created_utc).strftime('%Y-%m-%d %H:%M:%S'),
-                "post_text": post.title
-            })
-    except Exception as e:
-        logging.error(f"❌ Error fetching posts from r/{subreddit_name}: {e}")
-
-    return posts
+# ✅ Fetch Posts from Multiple Subreddits
+async def fetch_all_recent_posts(time_filter='month'):
+    """Fetches posts from multiple subreddits asynchronously."""
+    all_posts = []
+    for subreddit_name in SUBREDDITS:
+        subreddit = await async_reddit.subreddit(subreddit_name)
+        try:
+            async for post in subreddit.top(time_filter=time_filter, limit=25):
+                all_posts.append({
+                    "subreddit": subreddit_name,
+                    "date": datetime.datetime.utcfromtimestamp(post.created_utc).strftime('%Y-%m-%d %H:%M:%S'),
+                    "post_text": post.title
+                })
+        except Exception as e:
+            logging.error(f"❌ Error fetching posts from r/{subreddit_name}: {e}")
+    return all_posts
 
 # ✅ Predict Sentiment Score
 def predict_score(text):
@@ -115,13 +115,7 @@ def predict_score(text):
 # ✅ Generate Sentiment Forecast
 async def generate_forecast():
     start_time = datetime.datetime.utcnow() - datetime.timedelta(days=14)
-    all_posts = []
-
-    for sub in SUBREDDITS:
-        logging.info(f"Fetching posts from r/{sub}...")
-        posts = await fetch_all_recent_posts(sub)
-        all_posts.extend(posts)
-        logging.info(f"✅ Fetched {len(posts)} posts from r/{sub}")
+    all_posts = await fetch_all_recent_posts()
 
     if not all_posts:
         logging.warning("⚠️ No posts fetched! Using fallback random values.")
@@ -193,5 +187,9 @@ def home():
 
 @app.get("/graph.png")
 async def get_graph():
-    img = await generate_graph()
-    return Response(content=img.getvalue(), media_type="image/png")
+    try:
+        img = await generate_graph()
+        return Response(content=img.getvalue(), media_type="image/png")
+    except Exception as e:
+        logging.error(f"❌ Failed to generate graph: {e}")
+        raise HTTPException(status_code=500, detail="Error generating graph")
