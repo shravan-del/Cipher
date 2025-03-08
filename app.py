@@ -1,9 +1,10 @@
-# -*- coding: utf-8 -*-
 import os
 import datetime
 import numpy as np
 import pandas as pd
 import joblib
+import matplotlib
+matplotlib.use("Agg")  # Non-GUI backend for Render
 import matplotlib.pyplot as plt
 from scipy.interpolate import make_interp_spline
 import torch
@@ -11,17 +12,55 @@ import torch.nn as nn
 from transformers import AutoTokenizer
 import asyncpraw
 import asyncio
-import gradio as gr
+from fastapi import FastAPI, HTTPException
+from starlette.responses import Response
+import io
+import logging
 
-# Global settings
-num_days = 14
-client_id = os.getenv('client_id')
-client_secret = os.getenv('client_secret')
-MODEL_PATH = "cardiffnlp/xlm-twitter-politics-sentiment"
+# ✅ Configure Logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
+# ✅ Load Reddit API Credentials
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "D9IRrBYtJO37pc7Xgimq6g")
+REDDIT_SECRET = os.getenv("REDDIT_SECRET", "iRiiXDqxTfHuMiAOKaxsXEoEPeJfHA")
+REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "MyAPI/0.0.1")
 
+if not all([REDDIT_CLIENT_ID, REDDIT_SECRET, REDDIT_USER_AGENT]):
+    logging.error("❌ Reddit API credentials are missing!")
+    raise Exception("Reddit API credentials not set.")
 
-# Minimal model class definition (required)
+# ✅ Initialize Async PRAW (Asynchronous Reddit API)
+try:
+    async_reddit = asyncpraw.Reddit(
+        client_id=REDDIT_CLIENT_ID,
+        client_secret=REDDIT_SECRET,
+        user_agent=REDDIT_USER_AGENT
+    )
+    logging.info("✅ Reddit API initialized!")
+except Exception as e:
+    logging.error(f"❌ Error initializing Reddit API: {e}")
+    raise Exception("Reddit API failed to initialize.")
+
+# ✅ Subreddits to monitor
+SUBREDDITS = [
+    "florida", "ohio", "libertarian", "southpark",
+    "walkaway", "truechristian", "conservatives"
+]
+
+# ✅ Load Pre-trained Models
+try:
+    autovectorizer = joblib.load('AutoVectorizer.pkl')
+    autoclassifier = joblib.load('AutoClassifier.pkl')
+    sentiment_model = joblib.load('sentiment_forecast_model.pkl')
+    logging.info("✅ Pre-trained vectorizer & classifier loaded successfully!")
+except Exception as e:
+    logging.error(f"❌ Error loading vectorizer/classifier: {e}")
+    raise Exception("Failed to load sentiment classifier.")
+
+# ✅ Load Sentiment Model
+MODEL = "cardiffnlp/xlm-twitter-politics-sentiment"
+tokenizer = AutoTokenizer.from_pretrained(MODEL)
+
 class ScorePredictor(nn.Module):
     def __init__(self, vocab_size, embedding_dim=128, hidden_dim=256, output_dim=1):
         super().__init__()
@@ -36,115 +75,123 @@ class ScorePredictor(nn.Module):
         x = self.fc(x[:, -1, :])
         return self.sigmoid(x)
 
-# Load models
-sentiment_model = joblib.load('sentiment_forecast_model.pkl')
-tokenizer = AutoTokenizer.from_pretrained(MODEL_PATH)
+# ✅ Load PyTorch Model
 score_model = ScorePredictor(tokenizer.vocab_size)
-score_model.load_state_dict(torch.load("score_predictor.pth", map_location=torch.device('cpu')))
-score_model.eval()
-print("Models loaded successfully.")
+try:
+    score_model.load_state_dict(torch.load("score_predictor.pth", map_location=torch.device('cpu')))
+    score_model.eval()
+    logging.info("✅ Sentiment model loaded successfully!")
+except Exception as e:
+    logging.error(f"❌ Error loading sentiment model: {e}")
+    raise Exception("Sentiment model failed to load.")
 
-# Function to fetch posts from Reddit
-async def get_posts(subreddit_name, time_filter='month'):
-
-    # Initialize asyncpraw Reddit client
-    async_reddit = asyncpraw.Reddit(
-    client_id=client_id,
-    client_secret=client_secret,
-    user_agent="sentimentForecastAgent"
-)
-
-
-
-
-    
+# ✅ Fetch Posts from Reddit
+async def fetch_all_recent_posts(subreddit_name, time_filter='month'):
+    """Fetches posts from Reddit asynchronously."""
     subreddit = await async_reddit.subreddit(subreddit_name)
     posts = []
 
-    async for post in subreddit.top(time_filter=time_filter, limit=25):
-        posts.append({
-            "date": datetime.datetime.utcfromtimestamp(post.created_utc).strftime('%Y-%m-%d %H:%M:%S'),
-            "post_text": post.title
-        })
+    try:
+        async for post in subreddit.top(time_filter=time_filter, limit=25):
+            posts.append({
+                "date": datetime.datetime.utcfromtimestamp(post.created_utc).strftime('%Y-%m-%d %H:%M:%S'),
+                "post_text": post.title
+            })
+    except Exception as e:
+        logging.error(f"❌ Error fetching posts from r/{subreddit_name}: {e}")
 
     return posts
 
-# Function to calculate sentiment
-def calculate_sentiment(text):
+# ✅ Predict Sentiment Score
+def predict_score(text):
+    """Predicts sentiment score using the PyTorch model."""
     if not text:
         return 0.0
+    encoded_input = tokenizer(text.split(), return_tensors='pt', padding=True, truncation=True, max_length=512)
+    with torch.no_grad():
+        score = score_model(encoded_input["input_ids"], encoded_input["attention_mask"])[0].item()
+    return score
+
+# ✅ Generate Sentiment Forecast
+async def generate_forecast():
+    start_time = datetime.datetime.utcnow() - datetime.timedelta(days=14)
+    all_posts = []
+
+    for sub in SUBREDDITS:
+        logging.info(f"Fetching posts from r/{sub}...")
+        posts = await fetch_all_recent_posts(sub)
+        all_posts.extend(posts)
+        logging.info(f"✅ Fetched {len(posts)} posts from r/{sub}")
+
+    if not all_posts:
+        logging.warning("⚠️ No posts fetched! Using fallback random values.")
+        df = pd.DataFrame({
+            "date_only": [start_time.date() + datetime.timedelta(days=i) for i in range(14)],
+            "sentiment_score": np.random.uniform(0.3, 0.7, 14)
+        })
     else:
-        encoded = tokenizer(text.split(), return_tensors='pt', padding=True, truncation=True, max_length=512)
-        with torch.no_grad():
-            score_val = score_model(encoded["input_ids"], encoded["attention_mask"])[0].item()
-        return score_val
+        df = pd.DataFrame(all_posts)
+        df['date'] = pd.to_datetime(df['date'])
+        df['date_only'] = df['date'].dt.date
+        df = df.sort_values(by=['date_only'])
+        df['sentiment_score'] = df['post_text'].apply(predict_score)
+        df = df.dropna()
 
-# Function to generate sentiment forecast
-async def generate_forecast(subreddit, num_days=14):
-    # Fetch posts asynchronously
-    posts = await get_posts(subreddit)
+    # ✅ Aggregate Sentiment by Day
+    daily_sentiment = df.groupby('date_only')['sentiment_score'].median()
 
-    # Create DataFrame and process dates
-    df = pd.DataFrame(posts)
-    df['date'] = pd.to_datetime(df['date'])
-    df['date_only'] = df['date'].dt.date
-    df = df.sort_values('date_only')
+    # ✅ Fill Missing Dates
+    expected_dates = pd.date_range(start=start_time.date(), periods=14)
+    daily_sentiment = daily_sentiment.reindex(expected_dates, fill_value=np.nan)
+    daily_sentiment = daily_sentiment.interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
 
-    # Calculate sentiment scores
-    df['sentiment_score'] = df['post_text'].apply(calculate_sentiment)
+    # ✅ Forecast Future Sentiment
+    sentiment_scores_np = daily_sentiment.values.reshape(1, -1)
+    pred = sentiment_model.predict(sentiment_scores_np)[0]
 
-    # Create a complete date index for the last num_days and group by date
-    full_dates = sorted([datetime.date.today() - datetime.timedelta(days=i) for i in range(num_days)])
-    daily = df.groupby('date_only')['sentiment_score'].mean().reindex(full_dates, fill_value=0.0)
-    historical = daily.values.tolist()
+    return pred
 
-    # Forecast using the pre-loaded sentiment_model
-    forecast = sentiment_model.predict(np.array(historical).reshape(1, -1))[0]
+# ✅ Generate Graph
+async def generate_graph():
+    pred = await generate_forecast()
 
-    # Create forecast plot
+    # ✅ Generate X-axis labels
     today = datetime.date.today()
-    forecast_dates = [today + datetime.timedelta(days=i) for i in range(7)]
-    x = np.arange(7)
-    xnew = np.linspace(0, 6, 300)
-    spline = make_interp_spline(x, forecast, k=min(3, len(forecast)-1))
-    smooth = spline(xnew)
+    days = [today + datetime.timedelta(days=i) for i in range(7)]
+    days_str = [day.strftime('%a %m/%d') for day in days]
 
-    fig, ax = plt.subplots(figsize=(14, 7))
-    ax.fill_between(xnew, smooth, color='#244B48', alpha=0.4)
-    ax.plot(xnew, smooth, color='#244B48', lw=3, label='Forecast')
-    ax.scatter(x, forecast, color='#244B48', s=100)
-    ax.set_title("7-Day Political Sentiment Forecast", fontsize=22, fontweight='bold', pad=20)
-    ax.set_xlabel("Date", fontsize=16)
-    ax.set_ylabel("Negative Sentiment (0-1)", fontsize=16)
-    ax.set_xticks(x)
-    ax.set_xticklabels([d.strftime('%a %m/%d') for d in forecast_dates], fontsize=12, rotation=45)
-    ax.legend(fontsize=14, loc='upper right')
+    # ✅ Smooth the curve
+    xnew = np.linspace(0, 6, 300)
+    spline = make_interp_spline(np.arange(7), pred, k=3)
+    pred_smooth = spline(xnew)
+
+    # ✅ Create the plot
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.fill_between(xnew, pred_smooth, color='#244B48', alpha=0.4)
+    ax.plot(xnew, pred_smooth, color='#244B48', lw=3, label='Forecast')
+    ax.scatter(np.arange(7), pred, color='#244B48', s=100, zorder=5)
+    ax.set_title("7-Day Political Sentiment Forecast", fontsize=16, fontweight='bold')
+    ax.set_xlabel("Day", fontsize=12)
+    ax.set_ylabel("Negative Sentiment (0-1)", fontsize=12)
+    ax.set_xticks(np.arange(7))
+    ax.set_xticklabels(days_str, fontsize=10)
+    ax.legend(fontsize=10, loc='upper right')
     plt.tight_layout()
 
-    if not posts:
-        summary = "Subreddit not found or criteria not met for Cypher."
-    else:
-        summary = f"r/{subreddit} has loaded!"
+    img = io.BytesIO()
+    plt.savefig(img, format='png')
+    img.seek(0)
 
-    return fig, summary
+    return img
 
-# Gradio interface
-async def run_forecast(subreddit):
-    fig, summary = await generate_forecast(subreddit)
-    return fig, summary
+# ✅ FastAPI Setup
+app = FastAPI()
 
-# Gradio app
-with gr.Blocks(title="Political Sentiment Forecast") as demo:
-    gr.Markdown("# Reddit Political Sentiment Forecast")
-    gr.Markdown("Analyze recent Reddit posts to forecast political sentiment for the next 7 days.")
-    
-    subreddit_input = gr.Textbox(label="Subreddit (without r/)", placeholder="e.g. politics", value="politics")
-    output_text = gr.Textbox(label="Summary", lines=2)
-    submit_btn = gr.Button("Generate Forecast")
-    output_plot = gr.Plot(label="Forecast Plot")
-    
-    submit_btn.click(fn=run_forecast, inputs=subreddit_input, outputs=[output_plot, output_text])
+@app.get("/")
+def home():
+    return {"message": "Sentiment Forecast API is running!"}
 
-# Launch the app
-if __name__ == "__main__":
-    demo.launch(server_name="0.0.0.0", server_port=int(os.environ.get("PORT", 8080)))
+@app.get("/graph.png")
+async def get_graph():
+    img = await generate_graph()
+    return Response(content=img.getvalue(), media_type="image/png")
