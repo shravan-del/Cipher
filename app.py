@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import joblib
 import matplotlib
-matplotlib.use("Agg")  # Use non-GUI backend for Render
+matplotlib.use("Agg")  # Non-GUI backend for Render
 import matplotlib.pyplot as plt
 from scipy.interpolate import make_interp_spline
 import torch
@@ -16,30 +16,27 @@ from fastapi import FastAPI, HTTPException
 from starlette.responses import Response
 import io
 import logging
+from functools import lru_cache
 
 # ✅ Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ✅ Load Reddit API Credentials
-REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "D9IRrBYtJO37pc7Xgimq6g")
-REDDIT_SECRET = os.getenv("REDDIT_SECRET", "iRiiXDqxTfHuMiAOKaxsXEoEPeJfHA")
-REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "MyAPI/0.0.1")
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
+REDDIT_SECRET = os.getenv("REDDIT_SECRET")
+REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT")
 
 if not all([REDDIT_CLIENT_ID, REDDIT_SECRET, REDDIT_USER_AGENT]):
     logging.error("❌ Reddit API credentials are missing!")
     raise Exception("Reddit API credentials not set.")
 
 # ✅ Initialize Async PRAW (Asynchronous Reddit API)
-try:
-    async_reddit = asyncpraw.Reddit(
-        client_id=REDDIT_CLIENT_ID,
-        client_secret=REDDIT_SECRET,
-        user_agent=REDDIT_USER_AGENT
-    )
-    logging.info("✅ Reddit API initialized!")
-except Exception as e:
-    logging.error(f"❌ Error initializing Reddit API: {e}")
-    raise Exception("Reddit API failed to initialize.")
+async_reddit = asyncpraw.Reddit(
+    client_id=REDDIT_CLIENT_ID,
+    client_secret=REDDIT_SECRET,
+    user_agent=REDDIT_USER_AGENT
+)
+logging.info("✅ Reddit API initialized!")
 
 # ✅ Subreddits to monitor
 SUBREDDITS = [
@@ -85,13 +82,14 @@ except Exception as e:
     logging.error(f"❌ Error loading sentiment model: {e}")
     raise Exception("Sentiment model failed to load.")
 
-# ✅ Fetch Posts from Multiple Subreddits
+# ✅ Fetch Posts from Multiple Subreddits in Parallel
 async def fetch_all_recent_posts(time_filter='month'):
     """Fetches posts from multiple subreddits asynchronously."""
     all_posts = []
-    for subreddit_name in SUBREDDITS:
-        subreddit = await async_reddit.subreddit(subreddit_name)
+
+    async def fetch(subreddit_name):
         try:
+            subreddit = await async_reddit.subreddit(subreddit_name)
             async for post in subreddit.top(time_filter=time_filter, limit=25):
                 all_posts.append({
                     "subreddit": subreddit_name,
@@ -100,6 +98,8 @@ async def fetch_all_recent_posts(time_filter='month'):
                 })
         except Exception as e:
             logging.error(f"❌ Error fetching posts from r/{subreddit_name}: {e}")
+
+    await asyncio.gather(*(fetch(sub) for sub in SUBREDDITS))
     return all_posts
 
 # ✅ Predict Sentiment Score
@@ -112,7 +112,8 @@ def predict_score(text):
         score = score_model(encoded_input["input_ids"], encoded_input["attention_mask"])[0].item()
     return score
 
-# ✅ Generate Sentiment Forecast
+# ✅ Cache Forecast to Avoid Recomputing
+@lru_cache(maxsize=1)
 async def generate_forecast():
     start_time = datetime.datetime.utcnow() - datetime.timedelta(days=14)
     all_posts = await fetch_all_recent_posts()
@@ -131,7 +132,6 @@ async def generate_forecast():
         df['sentiment_score'] = df['post_text'].apply(predict_score)
         df = df.dropna()
 
-    # ✅ Aggregate Sentiment by Day
     daily_sentiment = df.groupby('date_only')['sentiment_score'].median()
 
     # ✅ Fill Missing Dates
@@ -154,28 +154,28 @@ async def generate_graph():
     days = [today + datetime.timedelta(days=i) for i in range(7)]
     days_str = [day.strftime('%a %m/%d') for day in days]
 
-    # ✅ Smooth the curve
     xnew = np.linspace(0, 6, 300)
     spline = make_interp_spline(np.arange(7), pred, k=3)
     pred_smooth = spline(xnew)
 
-    # ✅ Create the plot
-    fig, ax = plt.subplots(figsize=(10, 5))
+    # ✅ Optimized Matplotlib Rendering
+    fig, ax = plt.subplots(figsize=(8, 4), dpi=100)
     ax.fill_between(xnew, pred_smooth, color='#244B48', alpha=0.4)
-    ax.plot(xnew, pred_smooth, color='#244B48', lw=3, label='Forecast')
-    ax.scatter(np.arange(7), pred, color='#244B48', s=100, zorder=5)
-    ax.set_title("7-Day Political Sentiment Forecast", fontsize=16, fontweight='bold')
-    ax.set_xlabel("Day", fontsize=12)
-    ax.set_ylabel("Negative Sentiment (0-1)", fontsize=12)
+    ax.plot(xnew, pred_smooth, color='#244B48', lw=2.5, label='Forecast')
+    ax.scatter(np.arange(7), pred, color='#244B48', s=50, zorder=5)
+    ax.set_title("7-Day Political Sentiment Forecast", fontsize=14, fontweight='bold')
+    ax.set_xlabel("Day", fontsize=10)
+    ax.set_ylabel("Negative Sentiment (0-1)", fontsize=10)
     ax.set_xticks(np.arange(7))
-    ax.set_xticklabels(days_str, fontsize=10)
-    ax.legend(fontsize=10, loc='upper right')
+    ax.set_xticklabels(days_str, fontsize=8)
+    ax.legend(fontsize=8, loc='upper right')
     plt.tight_layout()
 
     img = io.BytesIO()
-    plt.savefig(img, format='png')
-    img.seek(0)
+    plt.savefig(img, format='png', bbox_inches='tight', pad_inches=0.1)
+    plt.close(fig)
 
+    img.seek(0)
     return img
 
 # ✅ FastAPI Setup
@@ -187,9 +187,5 @@ def home():
 
 @app.get("/graph.png")
 async def get_graph():
-    try:
-        img = await generate_graph()
-        return Response(content=img.getvalue(), media_type="image/png")
-    except Exception as e:
-        logging.error(f"❌ Failed to generate graph: {e}")
-        raise HTTPException(status_code=500, detail="Error generating graph")
+    img = await generate_graph()
+    return Response(content=img.getvalue(), media_type="image/png")
