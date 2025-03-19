@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import joblib
 import matplotlib
-matplotlib.use("Agg")  # Non-GUI backend for Render
+matplotlib.use("Agg")  # Use non-GUI backend for Render
 import matplotlib.pyplot as plt
 from scipy.interpolate import make_interp_spline
 import torch
@@ -16,7 +16,7 @@ from fastapi import FastAPI, HTTPException
 from starlette.responses import Response
 import io
 import logging
-from functools import lru_cache
+from cachetools import TTLCache
 
 # ✅ Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -24,11 +24,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 # ✅ Load Reddit API Credentials
 REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "D9IRrBYtJO37pc7Xgimq6g")
 REDDIT_SECRET = os.getenv("REDDIT_SECRET", "iRiiXDqxTfHuMiAOKaxsXEoEPeJfHA")
-REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "MyRedditApp/0.1 by Shravan")
-
-if not all([REDDIT_CLIENT_ID, REDDIT_SECRET, REDDIT_USER_AGENT]):
-    logging.error("❌ Reddit API credentials are missing!")
-    raise Exception("Reddit API credentials not set.")
+REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "MyAPI/0.0.1")
 
 # ✅ Initialize Async PRAW (Asynchronous Reddit API)
 async_reddit = asyncpraw.Reddit(
@@ -36,7 +32,6 @@ async_reddit = asyncpraw.Reddit(
     client_secret=REDDIT_SECRET,
     user_agent=REDDIT_USER_AGENT
 )
-logging.info("✅ Reddit API initialized!")
 
 # ✅ Subreddits to monitor
 SUBREDDITS = [
@@ -82,24 +77,31 @@ except Exception as e:
     logging.error(f"❌ Error loading sentiment model: {e}")
     raise Exception("Sentiment model failed to load.")
 
-# ✅ Fetch Posts from Multiple Subreddits in Parallel
-async def fetch_all_recent_posts(time_filter='month'):
-    """Fetches posts from multiple subreddits asynchronously."""
-    all_posts = []
+# ✅ Implement Caching (Cache results for 10 minutes)
+cache = TTLCache(maxsize=10, ttl=600)
 
-    async def fetch(subreddit_name):
-        try:
-            subreddit = await async_reddit.subreddit(subreddit_name)
-            async for post in subreddit.top(time_filter=time_filter, limit=25):
-                all_posts.append({
-                    "subreddit": subreddit_name,
-                    "date": datetime.datetime.utcfromtimestamp(post.created_utc).strftime('%Y-%m-%d %H:%M:%S'),
-                    "post_text": post.title
-                })
-        except Exception as e:
-            logging.error(f"❌ Error fetching posts from r/{subreddit_name}: {e}")
+# ✅ Fetch Posts Asynchronously
+async def fetch_recent_posts(subreddit_name):
+    """Fetches posts asynchronously from a subreddit."""
+    subreddit = await async_reddit.subreddit(subreddit_name)
+    posts = []
+    try:
+        async for post in subreddit.top(time_filter="month", limit=25):
+            posts.append({
+                "subreddit": subreddit_name,
+                "date": datetime.datetime.utcfromtimestamp(post.created_utc).strftime('%Y-%m-%d %H:%M:%S'),
+                "post_text": post.title
+            })
+    except Exception as e:
+        logging.error(f"❌ Error fetching posts from r/{subreddit_name}: {e}")
+    return posts
 
-    await asyncio.gather(*(fetch(sub) for sub in SUBREDDITS))
+# ✅ Fetch All Posts in Parallel
+async def fetch_all_posts():
+    """Fetch posts from all subreddits concurrently."""
+    tasks = [fetch_recent_posts(sub) for sub in SUBREDDITS]
+    results = await asyncio.gather(*tasks)
+    all_posts = [post for result in results for post in result]  # Flatten list
     return all_posts
 
 # ✅ Predict Sentiment Score
@@ -112,11 +114,15 @@ def predict_score(text):
         score = score_model(encoded_input["input_ids"], encoded_input["attention_mask"])[0].item()
     return score
 
-# ✅ Cache Forecast to Avoid Recomputing
-@lru_cache(maxsize=1)
+# ✅ Generate Sentiment Forecast
 async def generate_forecast():
+    """Generates forecast by analyzing subreddit posts."""
+    if "forecast" in cache:
+        logging.info("✅ Using cached forecast results.")
+        return cache["forecast"]
+
     start_time = datetime.datetime.utcnow() - datetime.timedelta(days=14)
-    all_posts = await fetch_all_recent_posts()
+    all_posts = await fetch_all_posts()
 
     if not all_posts:
         logging.warning("⚠️ No posts fetched! Using fallback random values.")
@@ -132,6 +138,7 @@ async def generate_forecast():
         df['sentiment_score'] = df['post_text'].apply(predict_score)
         df = df.dropna()
 
+    # ✅ Aggregate Sentiment by Day
     daily_sentiment = df.groupby('date_only')['sentiment_score'].median()
 
     # ✅ Fill Missing Dates
@@ -143,6 +150,8 @@ async def generate_forecast():
     sentiment_scores_np = daily_sentiment.values.reshape(1, -1)
     pred = sentiment_model.predict(sentiment_scores_np)[0]
 
+    # ✅ Cache the forecast results
+    cache["forecast"] = pred
     return pred
 
 # ✅ Generate Graph
@@ -154,28 +163,22 @@ async def generate_graph():
     days = [today + datetime.timedelta(days=i) for i in range(7)]
     days_str = [day.strftime('%a %m/%d') for day in days]
 
-    xnew = np.linspace(0, 6, 300)
-    spline = make_interp_spline(np.arange(7), pred, k=3)
-    pred_smooth = spline(xnew)
-
-    # ✅ Optimized Matplotlib Rendering
-    fig, ax = plt.subplots(figsize=(8, 4), dpi=100)
-    ax.fill_between(xnew, pred_smooth, color='#244B48', alpha=0.4)
-    ax.plot(xnew, pred_smooth, color='#244B48', lw=2.5, label='Forecast')
-    ax.scatter(np.arange(7), pred, color='#244B48', s=50, zorder=5)
-    ax.set_title("7-Day Political Sentiment Forecast", fontsize=14, fontweight='bold')
-    ax.set_xlabel("Day", fontsize=10)
-    ax.set_ylabel("Negative Sentiment (0-1)", fontsize=10)
+    # ✅ Create the plot
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(np.arange(7), pred, color='#244B48', lw=3, label='Forecast', marker='o')
+    ax.fill_between(np.arange(7), pred, color='#244B48', alpha=0.4)
+    ax.set_title("7-Day Political Sentiment Forecast", fontsize=16, fontweight='bold')
+    ax.set_xlabel("Day", fontsize=12)
+    ax.set_ylabel("Negative Sentiment (0-1)", fontsize=12)
     ax.set_xticks(np.arange(7))
-    ax.set_xticklabels(days_str, fontsize=8)
-    ax.legend(fontsize=8, loc='upper right')
+    ax.set_xticklabels(days_str, fontsize=10)
+    ax.legend(fontsize=10, loc='upper right')
     plt.tight_layout()
 
     img = io.BytesIO()
-    plt.savefig(img, format='png', bbox_inches='tight', pad_inches=0.1)
-    plt.close(fig)
-
+    plt.savefig(img, format='png')
     img.seek(0)
+
     return img
 
 # ✅ FastAPI Setup
