@@ -156,31 +156,44 @@ async def generate_forecast():
 
 # ✅ Generate Graph
 async def generate_graph():
-    pred = await generate_forecast()
+    pred = await generate_forecast()  # Fetch the forecasted sentiment scores
 
     # ✅ Generate X-axis labels
     today = datetime.date.today()
     days = [today + datetime.timedelta(days=i) for i in range(7)]
     days_str = [day.strftime('%a %m/%d') for day in days]
 
-    # ✅ Create the plot
+    # ✅ Generate smooth curve using interpolation
+    x = np.arange(7)  # Original x-coordinates (day indices)
+    y = np.array(pred)  # Predicted sentiment scores
+    
+    # Create a smooth x-axis range for interpolation
+    x_smooth = np.linspace(x.min(), x.max(), 300)  
+
+    # Apply spline interpolation for smooth curves
+    spline = make_interp_spline(x, y, k=3)  # k=3 ensures cubic smoothing
+    y_smooth = spline(x_smooth)
+
+    # ✅ Create the plot with smooth curves
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax.plot(np.arange(7), pred, color='#244B48', lw=3, label='Forecast', marker='o')
-    ax.fill_between(np.arange(7), pred, color='#244B48', alpha=0.4)
+    ax.fill_between(x_smooth, y_smooth, color='#244B48', alpha=0.4)
+    ax.plot(x_smooth, y_smooth, color='#244B48', lw=3, label='Forecast')  # Smooth line
+    ax.scatter(x, y, color='#244B48', s=100, zorder=5)  # Keep original points
+
     ax.set_title("7-Day Political Sentiment Forecast", fontsize=16, fontweight='bold')
     ax.set_xlabel("Day", fontsize=12)
     ax.set_ylabel("Negative Sentiment (0-1)", fontsize=12)
-    ax.set_xticks(np.arange(7))
+    ax.set_xticks(x)
     ax.set_xticklabels(days_str, fontsize=10)
     ax.legend(fontsize=10, loc='upper right')
     plt.tight_layout()
 
+    # ✅ Convert plot to an image buffer
     img = io.BytesIO()
     plt.savefig(img, format='png')
     img.seek(0)
 
     return img
-
 # ✅ FastAPI Setup
 app = FastAPI()
 
