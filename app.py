@@ -17,14 +17,19 @@ from starlette.responses import Response
 import io
 import logging
 from cachetools import TTLCache
+import time
 
 # ✅ Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ✅ Load Reddit API Credentials
-REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "D9IRrBYtJO37pc7Xgimq6g")
-REDDIT_SECRET = os.getenv("REDDIT_SECRET", "iRiiXDqxTfHuMiAOKaxsXEoEPeJfHA")
-REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "MyAPI/0.0.1")
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
+REDDIT_SECRET = os.getenv("REDDIT_SECRET")
+REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT")
+
+if not all([REDDIT_CLIENT_ID, REDDIT_SECRET, REDDIT_USER_AGENT]):
+    logging.error("❌ Reddit API credentials are missing!")
+    raise Exception("Reddit API credentials not set.")
 
 # ✅ Initialize Async PRAW (Asynchronous Reddit API)
 async_reddit = asyncpraw.Reddit(
@@ -41,12 +46,10 @@ SUBREDDITS = [
 
 # ✅ Load Pre-trained Models
 try:
-    autovectorizer = joblib.load('AutoVectorizer.pkl')
-    autoclassifier = joblib.load('AutoClassifier.pkl')
     sentiment_model = joblib.load('sentiment_forecast_model.pkl')
-    logging.info("✅ Pre-trained vectorizer & classifier loaded successfully!")
+    logging.info("✅ Sentiment forecast model loaded successfully!")
 except Exception as e:
-    logging.error(f"❌ Error loading vectorizer/classifier: {e}")
+    logging.error(f"❌ Error loading sentiment model: {e}")
     raise Exception("Failed to load sentiment classifier.")
 
 # ✅ Load Sentiment Model
@@ -77,8 +80,9 @@ except Exception as e:
     logging.error(f"❌ Error loading sentiment model: {e}")
     raise Exception("Sentiment model failed to load.")
 
-# ✅ Implement Caching (Cache results for 10 minutes)
-cache = TTLCache(maxsize=10, ttl=600)
+# ✅ Implement Caching for 24 Hours (1 Day)
+cache = TTLCache(maxsize=10, ttl=86400)  # Cache lasts for 24 hours
+last_update_time = None  # Track last update timestamp
 
 # ✅ Fetch Posts Asynchronously
 async def fetch_recent_posts(subreddit_name):
@@ -114,13 +118,18 @@ def predict_score(text):
         score = score_model(encoded_input["input_ids"], encoded_input["attention_mask"])[0].item()
     return score
 
-# ✅ Generate Sentiment Forecast
+# ✅ Generate Sentiment Forecast (Updated to Run Once Per Day)
 async def generate_forecast():
-    """Generates forecast by analyzing subreddit posts."""
-    if "forecast" in cache:
-        logging.info("✅ Using cached forecast results.")
+    """Generates forecast by analyzing subreddit posts once per day."""
+    global last_update_time
+
+    # ✅ Check if it's been 24 hours since the last update
+    if "forecast" in cache and last_update_time and (time.time() - last_update_time < 86400):
+        logging.info("✅ Using cached forecast (less than 24 hours old).")
         return cache["forecast"]
 
+    logging.info("🔄 Generating new forecast (more than 24 hours since last update)...")
+    
     start_time = datetime.datetime.utcnow() - datetime.timedelta(days=14)
     all_posts = await fetch_all_posts()
 
@@ -150,13 +159,15 @@ async def generate_forecast():
     sentiment_scores_np = daily_sentiment.values.reshape(1, -1)
     pred = sentiment_model.predict(sentiment_scores_np)[0]
 
-    # ✅ Cache the forecast results
+    # ✅ Update cache and timestamp
     cache["forecast"] = pred
+    last_update_time = time.time()
+    
     return pred
 
-# ✅ Generate Graph
+# ✅ Generate Graph with Smooth Curves
 async def generate_graph():
-    pred = await generate_forecast()  # Fetch the forecasted sentiment scores
+    pred = await generate_forecast()
 
     # ✅ Generate X-axis labels
     today = datetime.date.today()
@@ -164,17 +175,14 @@ async def generate_graph():
     days_str = [day.strftime('%a %m/%d') for day in days]
 
     # ✅ Generate smooth curve using interpolation
-    x = np.arange(7)  # Original x-coordinates (day indices)
-    y = np.array(pred)  # Predicted sentiment scores
+    x = np.arange(7)
+    y = np.array(pred)
     
-    # Create a smooth x-axis range for interpolation
-    x_smooth = np.linspace(x.min(), x.max(), 300)  
-
-    # Apply spline interpolation for smooth curves
-    spline = make_interp_spline(x, y, k=3)  # k=3 ensures cubic smoothing
+    x_smooth = np.linspace(x.min(), x.max(), 300)  # Smooth X-axis
+    spline = make_interp_spline(x, y, k=3)  # Cubic smoothing
     y_smooth = spline(x_smooth)
 
-    # ✅ Create the plot with smooth curves
+    # ✅ Create the plot
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.fill_between(x_smooth, y_smooth, color='#244B48', alpha=0.4)
     ax.plot(x_smooth, y_smooth, color='#244B48', lw=3, label='Forecast')  # Smooth line
@@ -188,12 +196,12 @@ async def generate_graph():
     ax.legend(fontsize=10, loc='upper right')
     plt.tight_layout()
 
-    # ✅ Convert plot to an image buffer
     img = io.BytesIO()
     plt.savefig(img, format='png')
     img.seek(0)
 
     return img
+
 # ✅ FastAPI Setup
 app = FastAPI()
 
