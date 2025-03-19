@@ -22,9 +22,9 @@ from functools import lru_cache
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 # ✅ Load Reddit API Credentials
-REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID")
-REDDIT_SECRET = os.getenv("REDDIT_SECRET")
-REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT")
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID"="D9IRrBYtJO37pc7Xgimq6g")
+REDDIT_SECRET = os.getenv("REDDIT_SECRET"="iRiiXDqxTfHuMiAOKaxsXEoEPeJfHA")
+REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT"="MyRedditApp/0.1 by Shravan")
 
 if not all([REDDIT_CLIENT_ID, REDDIT_SECRET, REDDIT_USER_AGENT]):
     logging.error("❌ Reddit API credentials are missing!")
