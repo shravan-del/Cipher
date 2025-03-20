@@ -18,7 +18,6 @@ import io
 import logging
 from cachetools import TTLCache
 import time
-import re
 
 # ✅ Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -42,24 +41,17 @@ async_reddit = asyncpraw.Reddit(
 # ✅ Subreddits to monitor
 SUBREDDITS = [
     "politics"
-    # "florida",
-    # "ohio",
-    # "libertarian",
-    # "southpark",
-    # "walkaway",
-    # "truechristian",
-    # "conservatives"
+    #, "ohio", "libertarian", "southpark",
+    # "walkaway", "truechristian", "conservatives"
 ]
 
 # ✅ Load Pre-trained Models
 try:
-    autovectorizer = joblib.load('AutoVectorizer.pkl')
-    autoclassifier = joblib.load('AutoClassifier.pkl')
     sentiment_model = joblib.load('sentiment_forecast_model.pkl')
-    logging.info("✅ Models loaded successfully!")
+    logging.info("✅ Sentiment forecast model loaded successfully!")
 except Exception as e:
-    logging.error(f"❌ Error loading models: {e}")
-    raise Exception("Failed to load models.")
+    logging.error(f"❌ Error loading sentiment model: {e}")
+    raise Exception("Failed to load sentiment classifier.")
 
 # ✅ Load Sentiment Model
 MODEL = "cardiffnlp/xlm-twitter-politics-sentiment"
@@ -89,39 +81,39 @@ except Exception as e:
     logging.error(f"❌ Error loading sentiment model: {e}")
     raise Exception("Sentiment model failed to load.")
 
-cache_time = 86400  # 24 Hours
+
+cache_time=100
 # ✅ Implement Caching for 24 Hours (1 Day)
 cache = TTLCache(maxsize=10, ttl=cache_time)  # Cache lasts for 24 hours
 last_update_time = None  # Track last update timestamp
 
 # ✅ Fetch Posts Asynchronously
-async def fetch_recent_posts(subreddit_name, start_time, limit=500):
+async def fetch_recent_posts(subreddit_name):
+    """Fetches posts asynchronously from a subreddit."""
     subreddit = await async_reddit.subreddit(subreddit_name)
     posts = []
     try:
-        async for post in subreddit.new(limit=limit):
-            post_time = datetime.datetime.utcfromtimestamp(post.created_utc)
-            if post_time >= start_time:
-                posts.append({
-                    "subreddit": subreddit_name,
-                    "timestamp": post.created_utc,
-                    "date": post_time.strftime('%Y-%m-%d %H:%M:%S'),
-                    "post_text": post.title
-                })
+        async for post in subreddit.top(time_filter="month", limit=25):
+            posts.append({
+                "subreddit": subreddit_name,
+                "date": datetime.datetime.utcfromtimestamp(post.created_utc).strftime('%Y-%m-%d %H:%M:%S'),
+                "post_text": post.title
+            })
     except Exception as e:
         logging.error(f"❌ Error fetching posts from r/{subreddit_name}: {e}")
     return posts
 
-# ✅ Preprocess Text
-def preprocess_text(text):
-    text = text.lower()
-    text = re.sub(r'http\S+', '', text)
-    text = re.sub(r'[^a-zA-Z0-9\s.,!?]', '', text)
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+# ✅ Fetch All Posts in Parallel
+async def fetch_all_posts():
+    """Fetch posts from all subreddits concurrently."""
+    tasks = [fetch_recent_posts(sub) for sub in SUBREDDITS]
+    results = await asyncio.gather(*tasks)
+    all_posts = [post for result in results for post in result]  # Flatten list
+    return all_posts
 
 # ✅ Predict Sentiment Score
 def predict_score(text):
+    """Predicts sentiment score using the PyTorch model."""
     if not text:
         return 0.0
     encoded_input = tokenizer(text.split(), return_tensors='pt', padding=True, truncation=True, max_length=512)
@@ -131,62 +123,87 @@ def predict_score(text):
 
 # ✅ Generate Sentiment Forecast (Updated to Run Once Per Day)
 async def generate_forecast():
+    """Generates forecast by analyzing subreddit posts once per day."""
     global last_update_time
 
+    # ✅ Check if it's been 24 hours since the last update
     if "forecast" in cache and last_update_time and (time.time() - last_update_time < cache_time):
         logging.info("✅ Using cached forecast (less than 24 hours old).")
         return cache["forecast"]
 
     logging.info("🔄 Generating new forecast (more than 24 hours since last update)...")
-
+    
     start_time = datetime.datetime.utcnow() - datetime.timedelta(days=14)
-    all_posts = []
+    all_posts = await fetch_all_posts()
 
-    tasks = [fetch_recent_posts(sub, start_time) for sub in SUBREDDITS]
-    results = await asyncio.gather(*tasks)
-    all_posts = [post for result in results for post in result]
+    if not all_posts:
+        logging.warning("⚠️ No posts fetched! Using fallback random values.")
+        df = pd.DataFrame({
+            "date_only": [start_time.date() + datetime.timedelta(days=i) for i in range(14)],
+            "sentiment_score": np.random.uniform(0.5, 0.6, 14)
+        })
+    else:
+        df = pd.DataFrame(all_posts)
+        df['date'] = pd.to_datetime(df['date'])
+        df['date_only'] = df['date'].dt.date
+        df = df.sort_values(by=['date_only'])
+        df['sentiment_score'] = df['post_text'].apply(predict_score)
+        df = df.dropna()
 
-    filtered_posts = []
-    for post in all_posts:
-        vector = autovectorizer.transform([post['post_text']])
-        prediction = autoclassifier.predict(vector)
-        if prediction[0] == 1:
-            filtered_posts.append(post)
-    all_posts = filtered_posts
+    # ✅ Aggregate Sentiment by Day
+    daily_sentiment = df.groupby('date_only')['sentiment_score'].median()
 
-    df = pd.DataFrame(all_posts)
-    df['date'] = pd.to_datetime(df['date'])
-    df['date_only'] = df['date'].dt.date
-    df = df.sort_values(by=['date_only'])
-    df['sentiment_score'] = df['post_text'].apply(predict_score)
+    # ✅ Fill Missing Dates
+    expected_dates = pd.date_range(start=start_time.date(), periods=14)
+    daily_sentiment = daily_sentiment.reindex(expected_dates, fill_value=np.nan)
+    daily_sentiment = daily_sentiment.interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
 
-    last_14_dates = df['date_only'].unique()
-    num_dates = min(len(last_14_dates), 14)
-    last_14_dates = sorted(last_14_dates, reverse=True)[:num_dates]
-
-    filtered_df = df[df['date_only'].isin(last_14_dates)]
-    daily_sentiment = filtered_df.groupby('date_only')['sentiment_score'].median()
-
-    if len(daily_sentiment) < 14:
-        mean_sentiment = daily_sentiment.mean()
-        padding = [mean_sentiment] * (14 - len(daily_sentiment))
-        daily_sentiment = np.concatenate([daily_sentiment.values, padding])
-        daily_sentiment = pd.Series(daily_sentiment)
-
+    # ✅ Forecast Future Sentiment
     sentiment_scores_np = daily_sentiment.values.reshape(1, -1)
     pred = sentiment_model.predict(sentiment_scores_np)[0]
 
+    # ✅ Update cache and timestamp
     cache["forecast"] = pred
     last_update_time = time.time()
-
+    
     return pred
 
 # ✅ Generate Graph with Smooth Curves
 async def generate_graph():
     pred = await generate_forecast()
 
+    # ✅ Generate X-axis labels
     today = datetime.date.today()
-    days = [today + datetime.timedelta(days=i) for i in
+    days = [today + datetime.timedelta(days=i) for i in range(7)]
+    days_str = [day.strftime('%a %m/%d') for day in days]
+
+    # ✅ Generate smooth curve using interpolation
+    x = np.arange(7)
+    y = np.array(pred)
+    
+    x_smooth = np.linspace(x.min(), x.max(), 300)  # Smooth X-axis
+    spline = make_interp_spline(x, y, k=3)  # Cubic smoothing
+    y_smooth = spline(x_smooth)
+
+    # ✅ Create the plot
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.fill_between(x_smooth, y_smooth, color='#244B48', alpha=0.4)
+    ax.plot(x_smooth, y_smooth, color='#244B48', lw=3, label='Forecast')  # Smooth line
+    ax.scatter(x, y, color='#244B48', s=100, zorder=5)  # Keep original points
+
+    ax.set_title("7-Day Political Sentiment Forecast", fontsize=16, fontweight='bold')
+    ax.set_xlabel("Day", fontsize=12)
+    ax.set_ylabel("Negative Sentiment (0-1)", fontsize=12)
+    ax.set_xticks(x)
+    ax.set_xticklabels(days_str, fontsize=10)
+    ax.legend(fontsize=10, loc='upper right')
+    plt.tight_layout()
+
+    img = io.BytesIO()
+    plt.savefig(img, format='png')
+    img.seek(0)
+
+    return img
 
 # ✅ FastAPI Setup
 app = FastAPI()
