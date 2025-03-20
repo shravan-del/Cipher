@@ -138,9 +138,9 @@ async def generate_forecast():
 
     if not all_posts:
         logging.warning("⚠️ No posts fetched! Using fallback random values.")
-        df = pd.DataFrame({
-            "date_only": [start_time.date() + datetime.timedelta(days=i) for i in range(14)],
-            "sentiment_score": np.random.uniform(0.5, 0.6, 14)
+        # df = pd.DataFrame({
+        #     "date_only": [start_time.date() + datetime.timedelta(days=i) for i in range(14)],
+        #     "sentiment_score": np.random.uniform(0.5, 0.6, 14)
         })
     else:
         df = pd.DataFrame(all_posts)
