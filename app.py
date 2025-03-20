@@ -81,8 +81,10 @@ except Exception as e:
     logging.error(f"❌ Error loading sentiment model: {e}")
     raise Exception("Sentiment model failed to load.")
 
+
+cache_time=100
 # ✅ Implement Caching for 24 Hours (1 Day)
-cache = TTLCache(maxsize=10, ttl=4)  # Cache lasts for 24 hours
+cache = TTLCache(maxsize=10, ttl=cache_time)  # Cache lasts for 24 hours
 last_update_time = None  # Track last update timestamp
 
 # ✅ Fetch Posts Asynchronously
@@ -125,7 +127,7 @@ async def generate_forecast():
     global last_update_time
 
     # ✅ Check if it's been 24 hours since the last update
-    if "forecast" in cache and last_update_time and (time.time() - last_update_time < 86400):
+    if "forecast" in cache and last_update_time and (time.time() - last_update_time < cache_time):
         logging.info("✅ Using cached forecast (less than 24 hours old).")
         return cache["forecast"]
 
