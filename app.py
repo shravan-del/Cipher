@@ -39,7 +39,10 @@ async_reddit = asyncpraw.Reddit(
 )
 
 # ✅ Subreddits to monitor
-SUBREDDITS = ["politics", "southpark", "centrist"]
+SUBREDDITS = ["centrist",
+    "southpark",
+    "truechristian",
+    'politics']
 
 # ✅ Load Pre-trained Models
 sentiment_model = joblib.load("models/sentiment_forecast_model.pkl")
@@ -64,7 +67,7 @@ score_model = ScorePredictor(tokenizer.vocab_size)
 score_model.load_state_dict(torch.load("models/score_predictor.pth", map_location=torch.device("cpu")))
 score_model.eval()
 
-cache = TTLCache(maxsize=10, ttl=86400)  # Cache lasts for 24 hours
+#cache = TTLCache(maxsize=10, ttl=86400)  # Cache lasts for 24 hours
 last_update_time = None  # Track last update timestamp
 
 async def fetch_recent_posts(subreddit_name):
@@ -98,8 +101,8 @@ async def generate_forecast():
     """Generates sentiment forecast."""
     global last_update_time
 
-    if "forecast" in cache and last_update_time and (time.time() - last_update_time < 86400):
-        return cache["forecast"]
+    # if "forecast" in cache and last_update_time and (time.time() - last_update_time < 86400):
+    #     return cache["forecast"]
 
     all_posts = await fetch_all_posts()
     df = pd.DataFrame(all_posts)
