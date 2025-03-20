@@ -82,7 +82,7 @@ except Exception as e:
     raise Exception("Sentiment model failed to load.")
 
 # ✅ Implement Caching for 24 Hours (1 Day)
-cache = TTLCache(maxsize=10, ttl=86400)  # Cache lasts for 24 hours
+cache = TTLCache(maxsize=10, ttl=4)  # Cache lasts for 24 hours
 last_update_time = None  # Track last update timestamp
 
 # ✅ Fetch Posts Asynchronously
