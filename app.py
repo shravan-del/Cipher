@@ -40,8 +40,9 @@ async_reddit = asyncpraw.Reddit(
 
 # ✅ Subreddits to monitor
 SUBREDDITS = [
-    "florida", "ohio", "libertarian", "southpark",
-    "walkaway", "truechristian", "conservatives"
+    "florida"
+    #, "ohio", "libertarian", "southpark",
+    # "walkaway", "truechristian", "conservatives"
 ]
 
 # ✅ Load Pre-trained Models
