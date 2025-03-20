@@ -42,7 +42,7 @@ async_reddit = asyncpraw.Reddit(
 SUBREDDITS = ["centrist",
     "southpark",
     "truechristian",
-    'politics']
+    'politics','humor']
 
 # ✅ Load Pre-trained Models
 sentiment_model = joblib.load("models/sentiment_forecast_model.pkl")
