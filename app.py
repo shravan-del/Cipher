@@ -56,9 +56,6 @@ sentiment_model = joblib.load('sentiment_forecast_model.pkl')
 # REDDIT_SECRET = os.getenv("REDDIT_SECRET", "")
 # REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "MyAPI/0.0.1")
 
-if not all([REDDIT_CLIENT_ID, REDDIT_SECRET]):
-    logging.error("Reddit API credentials not set in environment variables. Exiting.")
-    exit(1)
 
 reddit = praw.Reddit(
     client_id="PH99oWZjM43GimMtYigFvA",
