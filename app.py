@@ -106,7 +106,7 @@ def preprocess_text(text):
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-def predict_score(text):
+def predict_score(text):    
     """Predict sentiment score for a given text."""
     if not text:
         return 0.0
@@ -252,7 +252,7 @@ async def generate_graph():
         # logs that we’re regenerating, then calls the function that 
         # does all the data fetching and forecasting (formerly process_data())
         logging.info("Regenerating forecast and graph.")
-        buf = generate_forecast_and_plot()
+        buf = process_data()
         if not buf:
             fallback = io.BytesIO()
             fig, ax = plt.subplots()
