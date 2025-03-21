@@ -39,9 +39,7 @@ async_reddit = asyncpraw.Reddit(
 # ✅ Subreddits to monitor
 SUBREDDITS = [
     "centrist",
-    "libertarian",
     "southpark",
-    "truechristian",
     "conservatives"
 ]
 
@@ -132,9 +130,9 @@ async def generate_forecast():
     all_posts = await fetch_all_posts()
     if not all_posts:
         logging.warning("⚠️ No posts fetched! Using fallback random values.")
-        df = pd.DataFrame({
-            "date_only": [now.date() - datetime.timedelta(days=i) for i in range(14)],
-            "sentiment_score": np.random.uniform(0.3, 0.7, 14)
+        # df = pd.DataFrame({
+        #     "date_only": [now.date() - datetime.timedelta(days=i) for i in range(14)],
+        #     "sentiment_score": np.random.uniform(0.3, 0.7, 14)
         })
     else:
         df = pd.DataFrame(all_posts)
