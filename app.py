@@ -128,6 +128,14 @@ def predict_score(text):
         score = score_model(input_ids, attention_mask)[0].item()
     return score
 
+def should_update():
+    est = pytz.timezone('America/New_York')
+    now = datetime.datetime.now(est)
+    if not cache["last_updated"]:
+        return True
+    last = cache["last_updated"].astimezone(est)
+    return now.date() > last.date() and now.hour >= 1
+    
 def process_data():
     """Fetches data, performs analysis, and generates the plot."""
     logging.info("Starting data processing...")
@@ -234,28 +242,21 @@ def process_data():
     return buffer
 
 async def generate_graph():
-    """Generate or retrieve the cached graph image."""
-    # If cache is empty or older than 6 hours, regenerate
-    if (cache["image_data"] is None or 
-        cache["last_updated"] is None or 
-        (datetime.datetime.now() - cache["last_updated"]).total_seconds() > 6 * 3600):
-        logging.info("Cache expired or empty, regenerating graph")
-        buffer = process_data()
-        if buffer is None:
-            # Fallback to an error image
-            buffer = io.BytesIO()
-            fig, ax = plt.subplots(figsize=(8, 6))
-            ax.text(0.5, 0.5, "Error generating forecast", 
-                    ha='center', va='center', fontsize=20)
-            plt.savefig(buffer, format='png')
-            buffer.seek(0)
-            plt.close(fig)
+    if should_update() or cache["image_data"] is None:
+        logging.info("Regenerating forecast and graph.")
+        buf = generate_forecast_and_plot()
+        if not buf:
+            fallback = io.BytesIO()
+            fig, ax = plt.subplots()
+            ax.text(0.5, 0.5, "Forecast Unavailable", ha='center', va='center', fontsize=20)
+            plt.savefig(fallback, format='png')
+            fallback.seek(0)
+            return fallback
+        return buf
     else:
-        logging.info("Serving cached graph")
-        buffer = cache["image_data"]
-        buffer.seek(0)  # Reset buffer position
-        
-    return buffer
+        logging.info("Serving cached graph.")
+        cache["image_data"].seek(0)
+        return cache["image_data"]
 
 # Initialize FastAPI
 app = FastAPI()
