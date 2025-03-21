@@ -38,12 +38,11 @@ async_reddit = asyncpraw.Reddit(
 
 # ✅ Subreddits to monitor
 SUBREDDITS = [
+    "centrist",
+    "libertarian",
     "southpark",
-    "florida",
-    "buffalobills",
-    'kratom',
-    'truechristian',
-    'walkaway'
+    "truechristian",
+    "conservatives"
 ]
 
 # ✅ Load Pre-trained Models
@@ -92,7 +91,7 @@ async def fetch_recent_posts(subreddit_name):
     subreddit = await async_reddit.subreddit(subreddit_name)
     posts = []
     try:
-        async for post in subreddit.new(time_filter="month"):
+        async for post in subreddit.new(time_filter="month", limit=50):
             posts.append({
                 "subreddit": subreddit_name,
                 "date": datetime.datetime.utcfromtimestamp(post.created_utc).strftime('%Y-%m-%d %H:%M:%S'),
@@ -136,7 +135,7 @@ async def generate_forecast():
         # df = pd.DataFrame({
         #     "date_only": [now.date() - datetime.timedelta(days=i) for i in range(14)],
         #     "sentiment_score": np.random.uniform(0.3, 0.7, 14)
-        })
+        # })
     else:
         df = pd.DataFrame(all_posts)
         df['date'] = pd.to_datetime(df['date'])
@@ -172,7 +171,7 @@ async def generate_graph():
     # ✅ Create smooth curve
     x = np.arange(7)
     x_smooth = np.linspace(x.min(), x.max(), 300)
-    y_smooth = make_interp_spline(x, pred, k=2)(x_smooth)
+    y_smooth = make_interp_spline(x, pred, k=3)(x_smooth)
     
     # Create figure and plot
     fig, ax = plt.subplots(figsize=(10, 5))
