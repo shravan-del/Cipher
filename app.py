@@ -128,13 +128,20 @@ def predict_score(text):
         score = score_model(input_ids, attention_mask)[0].item()
     return score
 
+# some key logic: if today's date is after that last update and the time is after 1:00 am then allow update if not return false
 def should_update():
+    # sets that timezone
     est = pytz.timezone('America/New_York')
+    # fetches that data and keeps it in that eastern time
     now = datetime.datetime.now(est)
+    # now with this last_updated cache I am returning true to trigger that update
     if not cache["last_updated"]:
         return True
+    # converts the previous one to est as well
     last = cache["last_updated"].astimezone(est)
     return now.date() > last.date() and now.hour >= 1
+
+
     
 def process_data():
     """Fetches data, performs analysis, and generates the plot."""
@@ -241,8 +248,12 @@ def process_data():
     logging.info("Visualization updated successfully")
     return buffer
 
+# this should render the graph and checks if we should refresh it
 async def generate_graph():
+    # checks if the current time passes that 1 AM update condition
     if should_update() or cache["image_data"] is None:
+        # logs that we’re regenerating, then calls the function that 
+        # does all the data fetching and forecasting (formerly process_data())
         logging.info("Regenerating forecast and graph.")
         buf = generate_forecast_and_plot()
         if not buf:
