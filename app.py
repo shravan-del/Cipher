@@ -186,7 +186,7 @@ async def generate_graph():
     ax.set_xticklabels(days_str, fontsize=12, rotation=45)
     
     # Add grid for better readability
-    ax.grid(True, linestyle='--', alpha=0.6)
+    #ax.grid(True, linestyle='--', alpha=0.6)
     
     # Adjust layout
     plt.tight_layout()
