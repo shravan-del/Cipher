@@ -38,9 +38,12 @@ async_reddit = asyncpraw.Reddit(
 
 # ✅ Subreddits to monitor
 SUBREDDITS = [
-    "centrist",
     "southpark",
-    "conservatives"
+    "florida",
+    "buffalobills",
+    'kratom',
+    'truechristian',
+    'walkaway'
 ]
 
 # ✅ Load Pre-trained Models
