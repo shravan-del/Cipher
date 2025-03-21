@@ -92,7 +92,7 @@ async def fetch_recent_posts(subreddit_name):
     subreddit = await async_reddit.subreddit(subreddit_name)
     posts = []
     try:
-        async for post in subreddit.top(time_filter="month", limit=25):
+        async for post in subreddit.new(time_filter="month"):
             posts.append({
                 "subreddit": subreddit_name,
                 "date": datetime.datetime.utcfromtimestamp(post.created_utc).strftime('%Y-%m-%d %H:%M:%S'),
@@ -172,7 +172,7 @@ async def generate_graph():
     # ✅ Create smooth curve
     x = np.arange(7)
     x_smooth = np.linspace(x.min(), x.max(), 300)
-    y_smooth = make_interp_spline(x, pred, k=3)(x_smooth)
+    y_smooth = make_interp_spline(x, pred, k=2)(x_smooth)
     
     # Create figure and plot
     fig, ax = plt.subplots(figsize=(10, 5))
