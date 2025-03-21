@@ -160,55 +160,43 @@ async def generate_forecast():
 async def generate_graph():
     pred = await generate_forecast()
 
-    # # ✅ Generate X-axis labels
-    # today = datetime.date.today()
-    # days = [today + datetime.timedelta(days=i) for i in range(7)]
-    # days_str = [day.strftime('%a %m/%d') for day in days]
-
-    # # ✅ Create smooth curve
-    # x = np.arange(7)
-    # x_smooth = np.linspace(x.min(), x.max(), 300)
-    # y_smooth = make_interp_spline(x, pred, k=3)(x_smooth)
-
-    # fig, ax = plt.subplots(figsize=(10, 5))
-    # ax.fill_between(x_smooth, y_smooth, color='#244B48', alpha=0.4)
-    # ax.plot(x_smooth, y_smooth, color='#244B48', lw=3)
-    # ax.scatter(x, pred, color='#244B48', s=100)
-
-    # Load a custom font if available
-    font_path = "AfacadFlux-VariableFont_slnt,wght[1].ttf"
-    custom_font = fm.FontProperties(fname=font_path)
- 
+    # ✅ Generate X-axis labels
     today = datetime.date.today()
     days = [today + datetime.timedelta(days=i) for i in range(7)]
     days_str = [day.strftime('%a %m/%d') for day in days]
- 
-    xnew = np.linspace(0, 6, 300)
-    spline = make_interp_spline(np.arange(7), pred, k=3)
-    pred_smooth = spline(xnew)
-    fig, ax = plt.subplots(figsize=(12, 7))
-    ax.fill_between(xnew, pred_smooth, color='#244B48', alpha=0.4)
-    ax.plot(xnew, pred_smooth, color='#244B48', lw=3, label='Forecast')
-    ax.scatter(np.arange(7), pred, color='#244B48', s=100, zorder=5)
- 
-    ax.set_title("7-Day Political Sentiment Forecast", fontsize=22, fontweight='bold', pad=20, fontproperties=custom_font)
-    ax.set_xlabel("Day", fontsize=16, fontproperties=custom_font)
-    ax.set_ylabel("Negative Sentiment (0-1)", fontsize=16, fontproperties=custom_font)
-    ax.set_xticks(np.arange(7))
-    ax.set_xticklabels(days_str, fontsize=14, fontproperties=custom_font)
-    ax.set_yticklabels([f"{tick:.2f}" for tick in ax.get_yticks()], fontsize=14, fontproperties=custom_font)
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
-    ax.spines['left'].set_visible(False)
-    ax.spines['bottom'].set_visible(False)
-    ax.legend(fontsize=14, loc='upper right', prop=custom_font)
-    # plt.tight_layout()
-
+    
+    # ✅ Create smooth curve
+    x = np.arange(7)
+    x_smooth = np.linspace(x.min(), x.max(), 300)
+    y_smooth = make_interp_spline(x, pred, k=3)(x_smooth)
+    
+    # Create figure and plot
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.fill_between(x_smooth, y_smooth, color='#244B48', alpha=0.4)
+    ax.plot(x_smooth, y_smooth, color='#244B48', lw=3)
+    ax.scatter(x, pred, color='#244B48', s=100)
+    
+    # Add labels and title
+    ax.set_title("7-Day Negative Sentiment Forecast", fontsize=22, fontweight='bold', pad=20)
+    ax.set_xlabel("Date", fontsize=14, labelpad=10)
+    ax.set_ylabel("Negative Sentiment Score", fontsize=14, labelpad=10)
+    
+    # Set x-axis ticks and labels to show the days
+    ax.set_xticks(x)
+    ax.set_xticklabels(days_str, fontsize=12, rotation=45)
+    
+    # Add grid for better readability
+    ax.grid(True, linestyle='--', alpha=0.6)
+    
+    # Adjust layout
+    plt.tight_layout()
+    
+    # Save the figure to a BytesIO object
     img = io.BytesIO()
     plt.savefig(img, format='png')
     img.seek(0)
+    
     return img
-
 # ✅ FastAPI Setup
 app = FastAPI()
 
