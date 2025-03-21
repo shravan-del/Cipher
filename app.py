@@ -1,43 +1,73 @@
 import os
 import datetime
-import numpy as np
-import pandas as pd
+import praw
 import joblib
-import matplotlib
-matplotlib.use("Agg")  # Use non-GUI backend for Render
-import matplotlib.pyplot as plt
-from scipy.interpolate import make_interp_spline
 import torch
 import torch.nn as nn
+import pandas as pd
+import re
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")  # Use non-GUI backend
+import matplotlib.pyplot as plt
+import matplotlib.font_manager as fm
+from scipy.interpolate import make_interp_spline
 from transformers import AutoTokenizer
-import asyncpraw
-import asyncio
-from fastapi import FastAPI, HTTPException
-from starlette.responses import Response
+import pytz
 import io
+import base64
+from fastapi import FastAPI
+from starlette.responses import Response
 import logging
 
-# ✅ Configure Logging
+# Configure Logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-# ✅ Load Reddit API Credentials
-REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "D9IRrBYtJO37pc7Xgimq6g")
-REDDIT_SECRET = os.getenv("REDDIT_SECRET", "iRiiXDqxTfHuMiAOKaxsXEoEPeJfHA")
-REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "MyRedditApp/0.1 by Shravan")
+# Load models and data
+logging.info("Loading models...")
+autovectorizer = joblib.load('AutoVectorizer.pkl')
+autoclassifier = joblib.load('AutoClassifier.pkl')
+MODEL = "cardiffnlp/xlm-twitter-politics-sentiment"
+tokenizer = AutoTokenizer.from_pretrained(MODEL)
 
-if not all([REDDIT_CLIENT_ID, REDDIT_SECRET, REDDIT_USER_AGENT]):
-    logging.error("❌ Reddit API credentials are missing!")
-    raise Exception("Reddit API credentials not set.")
+class ScorePredictor(nn.Module):
+    def __init__(self, vocab_size, embedding_dim=128, hidden_dim=256, output_dim=1):
+        super(ScorePredictor, self).__init__()
+        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
+        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, output_dim)
+        self.sigmoid = nn.Sigmoid()
 
-# ✅ Initialize Async PRAW (Asynchronous Reddit API)
-async_reddit = asyncpraw.Reddit(
-    client_id=REDDIT_CLIENT_ID,
-    client_secret=REDDIT_SECRET,
-    user_agent=REDDIT_USER_AGENT
+    def forward(self, input_ids, attention_mask):
+        embedded = self.embedding(input_ids)
+        lstm_out, _ = self.lstm(embedded)
+        final_hidden_state = lstm_out[:, -1, :]
+        output = self.fc(final_hidden_state)
+        return self.sigmoid(output)
+
+score_model = ScorePredictor(tokenizer.vocab_size)
+score_model.load_state_dict(torch.load("score_predictor.pth"))
+score_model.eval()
+
+sentiment_model = joblib.load('sentiment_forecast_model.pkl')
+
+# Load Reddit API Credentials from environment variables
+# REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "")
+# REDDIT_SECRET = os.getenv("REDDIT_SECRET", "")
+# REDDIT_USER_AGENT = os.getenv("REDDIT_USER_AGENT", "MyAPI/0.0.1")
+
+if not all([REDDIT_CLIENT_ID, REDDIT_SECRET]):
+    logging.error("Reddit API credentials not set in environment variables. Exiting.")
+    exit(1)
+
+reddit = praw.Reddit(
+    client_id="PH99oWZjM43GimMtYigFvA",
+    client_secret="3tJsXQKEtFFYInxzLEDqRZ0s_w5z0g",
+    user_agent='MyAPI/0.0.1',
+    check_for_async=False
 )
 
-# ✅ Subreddits to monitor
-SUBREDDITS = [
+subreddits = [
     "centrist",
     "libertarian",
     "southpark",
@@ -45,169 +75,203 @@ SUBREDDITS = [
     "conservatives"
 ]
 
-# ✅ Load Pre-trained Models
-try:
-    sentiment_model = joblib.load('sentiment_forecast_model.pkl')
-    logging.info("✅ Sentiment forecast model loaded successfully!")
-except Exception as e:
-    logging.error(f"❌ Error loading sentiment model: {e}")
-    raise Exception("Failed to load sentiment classifier.")
+# Cache for the generated graph
+cache = {
+    "image_data": None,
+    "last_updated": None
+}
 
-# ✅ Load Sentiment Analysis Model
-MODEL = "cardiffnlp/xlm-twitter-politics-sentiment"
-tokenizer = AutoTokenizer.from_pretrained(MODEL)
-
-class ScorePredictor(nn.Module):
-    def __init__(self, vocab_size, embedding_dim=128, hidden_dim=256, output_dim=1):
-        super().__init__()
-        self.embedding = nn.Embedding(vocab_size, embedding_dim, padding_idx=0)
-        self.lstm = nn.LSTM(embedding_dim, hidden_dim, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, output_dim)
-        self.sigmoid = nn.Sigmoid()
-
-    def forward(self, input_ids, attention_mask):
-        x = self.embedding(input_ids)
-        x, _ = self.lstm(x)
-        x = self.fc(x[:, -1, :])
-        return self.sigmoid(x)
-
-# ✅ Load PyTorch Sentiment Model
-score_model = ScorePredictor(tokenizer.vocab_size)
-try:
-    score_model.load_state_dict(torch.load("score_predictor.pth", map_location=torch.device('cpu')))
-    score_model.eval()
-    logging.info("✅ Sentiment model loaded successfully!")
-except Exception as e:
-    logging.error(f"❌ Error loading sentiment model: {e}")
-    raise Exception("Sentiment model failed to load.")
-
-# ✅ Global Storage for Daily Update
-latest_forecast = None
-last_update = None
-
-# ✅ Fetch Posts Asynchronously
-async def fetch_recent_posts(subreddit_name):
-    """Fetches posts asynchronously from a subreddit."""
-    subreddit = await async_reddit.subreddit(subreddit_name)
+def fetch_all_recent_posts(subreddit_name, start_time, limit=500):
+    """Fetch recent posts from a subreddit."""
+    subreddit = reddit.subreddit(subreddit_name)
     posts = []
+
     try:
-        async for post in subreddit.new(time_filter="month", limit=50):
-            posts.append({
-                "subreddit": subreddit_name,
-                "date": datetime.datetime.utcfromtimestamp(post.created_utc).strftime('%Y-%m-%d %H:%M:%S'),
-                "post_text": post.title
-            })
+        for post in subreddit.top(limit=limit):
+            post_time = datetime.datetime.utcfromtimestamp(post.created_utc)
+            if post_time >= start_time:
+                posts.append({
+                    "subreddit": subreddit_name,
+                    "timestamp": post.created_utc,
+                    "date": post_time.strftime('%Y-%m-%d %H:%M:%S'),
+                    "post_text": post.title
+                })
     except Exception as e:
-        logging.error(f"❌ Error fetching posts from r/{subreddit_name}: {e}")
+        logging.error(f"Error fetching posts from r/{subreddit_name}: {e}")
+
     return posts
 
-# ✅ Fetch All Posts in Parallel
-async def fetch_all_posts():
-    """Fetch posts from all subreddits concurrently."""
-    tasks = [fetch_recent_posts(sub) for sub in SUBREDDITS]
-    results = await asyncio.gather(*tasks)
-    return [post for result in results for post in result]  # Flatten list
+def preprocess_text(text):
+    """Clean and preprocess text data."""
+    text = text.lower()
+    text = re.sub(r'http\S+', '', text)
+    text = re.sub(r'[^a-zA-Z0-9\s.,!?]', '', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
-# ✅ Predict Sentiment Score
 def predict_score(text):
-    """Predicts sentiment score using the PyTorch model."""
+    """Predict sentiment score for a given text."""
     if not text:
         return 0.0
-    encoded_input = tokenizer(text.split(), return_tensors='pt', padding=True, truncation=True, max_length=512)
+    max_length = 512
+
+    encoded_input = tokenizer(
+        text.split(),
+        return_tensors='pt',
+        padding=True,
+        truncation=True,
+        max_length=max_length
+    )
+
+    input_ids, attention_mask = encoded_input["input_ids"], encoded_input["attention_mask"]
     with torch.no_grad():
-        score = score_model(encoded_input["input_ids"], encoded_input["attention_mask"])[0].item()
+        score = score_model(input_ids, attention_mask)[0].item()
     return score
 
-# ✅ Generate Sentiment Forecast
-async def generate_forecast():
-    """Generates forecast and updates daily at 1 AM."""
-    global latest_forecast, last_update
-    now = datetime.datetime.utcnow()
+def process_data():
+    """Fetches data, performs analysis, and generates the plot."""
+    logging.info("Starting data processing...")
+    end_date = datetime.datetime.utcnow()
+    start_date = end_date - datetime.timedelta(days=14)
+    start_time = datetime.datetime.utcnow() - datetime.timedelta(days=14)
+    
+    all_posts = []
+    for sub in subreddits:
+        logging.info(f"Fetching posts from r/{sub}")
+        posts = fetch_all_recent_posts(sub, start_time)
+        all_posts.extend(posts)
+        logging.info(f"Fetched {len(posts)} posts from r/{sub}")
 
-    # ✅ Update once per day at 1 AM
-    if last_update and last_update.date() == now.date():
-        logging.info("✅ Using cached forecast (already updated today).")
-        return latest_forecast
+    logging.info("Filtering political posts...")
+    filtered_posts = []
+    for post in all_posts:
+        vector = autovectorizer.transform([post['post_text']])
+        prediction = autoclassifier.predict(vector)
+        if prediction[0] == 1:
+            filtered_posts.append(post)
+    all_posts = filtered_posts
+    logging.info(f"Filtered to {len(filtered_posts)} political posts")
 
-    all_posts = await fetch_all_posts()
-    if not all_posts:
-        logging.warning("⚠️ No posts fetched! Using fallback random values.")
-        # df = pd.DataFrame({
-        #     "date_only": [now.date() - datetime.timedelta(days=i) for i in range(14)],
-        #     "sentiment_score": np.random.uniform(0.3, 0.7, 14)
-        # })
-    else:
-        df = pd.DataFrame(all_posts)
-        df['date'] = pd.to_datetime(df['date'])
-        df['date_only'] = df['date'].dt.date
-        df = df.sort_values(by=['date_only'])
-        df['sentiment_score'] = df['post_text'].apply(predict_score)
-        df = df.dropna()
+    df = pd.DataFrame(all_posts)
+    if df.empty:
+        logging.error("No posts found for analysis")
+        return None
+        
+    df['date'] = pd.to_datetime(df['date'])
+    df['date_only'] = df['date'].dt.date
+    df = df.sort_values(by=['date_only'])
+    
+    logging.info("Calculating sentiment scores...")
+    df['sentiment_score'] = df['post_text'].apply(predict_score)
 
-    # ✅ Aggregate Sentiment by Day
-    daily_sentiment = df.groupby('date_only')['sentiment_score'].median()
+    last_14_dates = df['date_only'].unique()
+    num_dates = min(len(last_14_dates), 14)
+    last_14_dates = sorted(last_14_dates, reverse=True)[:num_dates]
 
-    # ✅ Fill Missing Dates
-    expected_dates = pd.date_range(start=now.date() - datetime.timedelta(days=14), periods=14)
-    daily_sentiment = daily_sentiment.reindex(expected_dates, fill_value=np.nan)
-    daily_sentiment = daily_sentiment.interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
+    filtered_df = df[df['date_only'].isin(last_14_dates)]
+    daily_sentiment = filtered_df.groupby('date_only')['sentiment_score'].median()
 
-    # ✅ Forecast Future Sentiment
+    if len(daily_sentiment) < 14:
+        mean_sentiment = daily_sentiment.mean()
+        padding = [mean_sentiment] * (14 - len(daily_sentiment))
+        daily_sentiment = np.concatenate([daily_sentiment.values, padding])
+        daily_sentiment = pd.Series(daily_sentiment)
+
+    logging.info("Generating forecast...")
     sentiment_scores_np = daily_sentiment.values.reshape(1, -1)
-    latest_forecast = sentiment_model.predict(sentiment_scores_np)[0]
-    last_update = now  # Update timestamp
+    prediction = sentiment_model.predict(sentiment_scores_np)
+    pred = prediction[0]
 
-    return latest_forecast
+    font_path = "AfacadFlux-VariableFont_slnt,wght[1].ttf"
+    try:
+        custom_font = fm.FontProperties(fname=font_path)
+    except Exception as e:
+        logging.warning(f"Custom font not found: {e}. Using default font.")
+        custom_font = None
 
-# ✅ Generate Graph
-async def generate_graph():
-    pred = await generate_forecast()
-
-    # ✅ Generate X-axis labels
     today = datetime.date.today()
     days = [today + datetime.timedelta(days=i) for i in range(7)]
     days_str = [day.strftime('%a %m/%d') for day in days]
+
+    xnew = np.linspace(0, 6, 300)
+    spline = make_interp_spline(np.arange(7), pred, k=3)
+    pred_smooth = spline(xnew)
+
+    logging.info("Creating visualization...")
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.fill_between(xnew, pred_smooth, color='#244B48', alpha=0.4)
+    ax.plot(xnew, pred_smooth, color='#244B48', lw=3, label='Forecast')
+    ax.scatter(np.arange(7), pred, color='#244B48', s=100, zorder=5)
     
-    # ✅ Create smooth curve
-    x = np.arange(7)
-    x_smooth = np.linspace(x.min(), x.max(), 300)
-    y_smooth = make_interp_spline(x, pred, k=3)(x_smooth)
+    est_timezone = pytz.timezone('America/New_York')
+    est_time = datetime.datetime.now(est_timezone)
+    ax.set_title(f"7-Day Political Sentiment Forecast - {est_time.strftime('%Y-%m-%d %H:%M:%S EST')}", 
+             fontsize=22, fontweight='bold', pad=20, fontproperties=custom_font)
     
-    # Create figure and plot
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.fill_between(x_smooth, y_smooth, color='#244B48', alpha=0.4)
-    ax.plot(x_smooth, y_smooth, color='#244B48', lw=3)
-    ax.scatter(x, pred, color='#244B48', s=100)
+    ax.set_xlabel("Day", fontsize=16, fontproperties=custom_font)
+    ax.set_ylabel("Negative Sentiment (0-1)", fontsize=16, fontproperties=custom_font)
+    ax.set_xticks(np.arange(7))
+    ax.set_xticklabels(days_str, fontsize=14, fontproperties=custom_font)
+    ax.set_yticklabels([f"{tick:.2f}" for tick in ax.get_yticks()], fontsize=14, fontproperties=custom_font)
+
+    # Clean up plot appearance
+    for spine in ax.spines.values():
+        spine.set_visible(False)
     
-    # Add labels and title
-    ax.set_title("7-Day Negative Sentiment Forecast", fontsize=22, fontweight='bold', pad=20)
-    ax.set_xlabel("Date", fontsize=14, labelpad=10)
-    ax.set_ylabel("Negative Sentiment Score", fontsize=14, labelpad=10)
-    
-    # Set x-axis ticks and labels to show the days
-    ax.set_xticks(x)
-    ax.set_xticklabels(days_str, fontsize=12, rotation=45)
-    
-    # Add grid for better readability
-    #ax.grid(True, linestyle='--', alpha=0.6)
-    
-    # Adjust layout
+    ax.legend(fontsize=14, loc='upper right', prop=custom_font)
     plt.tight_layout()
+
+    buffer = io.BytesIO()
+    plt.savefig(buffer, format='png')
+    buffer.seek(0)
+    plt.close(fig)
     
-    # Save the figure to a BytesIO object
-    img = io.BytesIO()
-    plt.savefig(img, format='png')
-    img.seek(0)
+    # Update cache
+    cache["image_data"] = buffer
+    cache["last_updated"] = datetime.datetime.now()
     
-    return img
-# ✅ FastAPI Setup
+    logging.info("Visualization updated successfully")
+    return buffer
+
+async def generate_graph():
+    """Generate or retrieve the cached graph image."""
+    # If cache is empty or older than 6 hours, regenerate
+    if (cache["image_data"] is None or 
+        cache["last_updated"] is None or 
+        (datetime.datetime.now() - cache["last_updated"]).total_seconds() > 6 * 3600):
+        logging.info("Cache expired or empty, regenerating graph")
+        buffer = process_data()
+        if buffer is None:
+            # Fallback to an error image
+            buffer = io.BytesIO()
+            fig, ax = plt.subplots(figsize=(8, 6))
+            ax.text(0.5, 0.5, "Error generating forecast", 
+                    ha='center', va='center', fontsize=20)
+            plt.savefig(buffer, format='png')
+            buffer.seek(0)
+            plt.close(fig)
+    else:
+        logging.info("Serving cached graph")
+        buffer = cache["image_data"]
+        buffer.seek(0)  # Reset buffer position
+        
+    return buffer
+
+# Initialize FastAPI
 app = FastAPI()
 
 @app.get("/")
 def home():
-    return {"message": "Sentiment Forecast API is running!"}
+    return {
+        "message": "Sentiment Forecast API is running!",
+        "last_updated": cache["last_updated"].isoformat() if cache["last_updated"] else None
+    }
 
 @app.get("/graph.png")
 async def get_graph():
-    img = await generate_graph()
-    return Response(content=img.getvalue(), media_type="image/png")
+    try:
+        img = await generate_graph()
+        return Response(content=img.getvalue(), media_type="image/png")
+    except Exception as e:
+        logging.error(f"Error generating graph: {e}")
+        return Response(content="Error generating graph", status_code=500)
